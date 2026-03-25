@@ -4,72 +4,112 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Tests;
 
-use Kode\Exception\BusinessException;
 use Kode\Exception\ExceptionManager;
-use Kode\Exception\HttpException;
-use Kode\Exception\RuntimeException;
+use Kode\Exception\KodeException;
+use Kode\Exception\Tracer\DistributedTracer;
 use PHPUnit\Framework\TestCase;
 
 class ExceptionTest extends TestCase
 {
-    public function testHttpExceptionCreation(): void
+    public function testKodeExceptionHttp(): void
     {
-        $exception = HttpException::badRequest('Invalid input');
+        $e = KodeException::bad('参数错误', ['field' => 'email']);
 
-        $this->assertEquals(400, $exception->getHttpStatusCode());
-        $this->assertEquals('BAD_REQUEST', $exception->getErrorCode());
-        $this->assertEquals('Invalid input', $exception->getMessage());
+        $this->assertEquals('E1001', $e->getErrorCode());
+        $this->assertEquals('参数错误', $e->getErrorMsg());
+        $this->assertEquals('http', $e->getErrorType());
+        $this->assertEquals('http', $e->getErrorType());
     }
 
-    public function testHttpExceptionToArray(): void
+    public function testKodeExceptionBusiness(): void
     {
-        $exception = HttpException::notFound('Resource not found');
-        $array = $exception->toArray();
+        $e = KodeException::param('参数不正确');
 
-        $this->assertEquals(404, $array['http_status_code']);
-        $this->assertEquals('NOT_FOUND', $array['error_code']);
-        $this->assertEquals('Resource not found', $array['message']);
-        $this->assertArrayHasKey('trace_id', $array);
+        $this->assertEquals('E2001', $e->getErrorCode());
+        $this->assertEquals('business', $e->getErrorType());
     }
 
-    public function testBusinessExceptionWithContext(): void
+    public function testKodeExceptionRuntime(): void
     {
-        $exception = BusinessException::notFound('User', '12345');
-        $context = $exception->getContext();
+        $e = KodeException::coroutinePanic('协程崩溃');
 
-        $this->assertEquals('NOT_FOUND', $exception->getErrorCode());
-        $this->assertEquals('User', $context['entity']);
-        $this->assertEquals('12345', $context['id']);
+        $this->assertEquals('E3001', $e->getErrorCode());
+        $this->assertEquals('runtime', $e->getErrorType());
     }
 
-    public function testRuntimeExceptionRecoverable(): void
+    public function testKodeExceptionNotFound(): void
     {
-        $exception = RuntimeException::coroutinePanic('Coroutine failed');
+        $e = KodeException::notFound('用户不存在', ['id' => 123]);
 
-        $this->assertFalse($exception->isRecoverable());
-        $this->assertNotEmpty($exception->getSuggestion());
+        $this->assertEquals('E1004', $e->getErrorCode());
+        $this->assertEquals('用户不存在', $e->getErrorMsg());
+        $this->assertEquals(['id' => 123], $e->getErrorContext());
+    }
+
+    public function testKodeExceptionToResponse(): void
+    {
+        $e = KodeException::bad('参数错误');
+        $response = $e->toResponse();
+
+        $this->assertFalse($response['success']);
+        $this->assertEquals('E1001', $response['error']['code']);
+        $this->assertEquals('参数错误', $response['error']['msg']);
+        $this->assertEquals('http', $response['error']['type']);
+        $this->assertArrayHasKey('trace_id', $response['error']);
     }
 
     public function testExceptionManagerFormat(): void
     {
         $manager = new ExceptionManager();
-        $exception = new \RuntimeException('Test error');
-        $formatted = $manager->format($exception);
+        $e = KodeException::bad('参数错误');
+        $formatted = $manager->format($e);
 
         $this->assertFalse($formatted['success']);
-        $this->assertEquals('Test error', $formatted['error']['message']);
+        $this->assertEquals('E1001', $formatted['error']['code']);
+        $this->assertEquals('参数错误', $formatted['error']['msg']);
     }
 
-    public function testExceptionManagerRender(): void
+    public function testDistributedTracer(): void
     {
-        $manager = new ExceptionManager();
-        $exception = HttpException::unauthorized();
-        $rendered = $manager->render($exception);
+        $tracer = new DistributedTracer('test-service');
+        $this->assertNotEmpty($tracer->getTraceId());
 
-        $this->assertJson($rendered);
+        $spanId = $tracer->startSpan('test-span');
+        $this->assertNotEmpty($spanId);
 
-        $decoded = json_decode($rendered, true);
-        $this->assertFalse($decoded['success']);
-        $this->assertEquals('UNAUTHORIZED', $decoded['error']['code']);
+        $tracer->endSpan($spanId);
+        $spans = $tracer->getSpans();
+        $this->assertCount(1, $spans);
+    }
+
+    public function testDistributedTracerTrace(): void
+    {
+        $tracer = new DistributedTracer('test-service');
+        $e = KodeException::bad('测试异常');
+        $report = $tracer->trace($e);
+
+        $this->assertArrayHasKey('trace_id', $report);
+        $this->assertArrayHasKey('spans', $report);
+        $this->assertArrayHasKey('source', $report);
+    }
+
+    public function testDistributedTracerExport(): void
+    {
+        $tracer = new DistributedTracer('test-service');
+        $e = KodeException::error('服务器错误');
+        $report = $tracer->trace($e);
+        $str = $tracer->exportAsString($report);
+
+        $this->assertStringContainsString('链路追踪报告', $str);
+        $this->assertStringContainsString('test-service', $str);
+    }
+
+    public function testTraceHeaders(): void
+    {
+        $tracer = new DistributedTracer('test-service');
+        $headers = $tracer->getTraceHeaders();
+
+        $this->assertArrayHasKey('X-Trace-Id', $headers);
+        $this->assertArrayHasKey('X-Span-Id', $headers);
     }
 }

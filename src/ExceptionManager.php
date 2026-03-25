@@ -4,12 +4,10 @@ declare(strict_types=1);
 
 namespace Kode\Exception;
 
-use Kode\Exception\Formatter\JsonResponseFormatter;
 use Kode\Exception\Formatter\ResponseFormatterInterface;
+use Kode\Exception\Formatter\UnifiedResponseFormatter;
 use Kode\Exception\Handler\ExceptionHandlerInterface;
-use Kode\Exception\Handler\GenericExceptionHandler;
-use Kode\Exception\Handler\HttpExceptionHandler;
-use Kode\Exception\Handler\RuntimeExceptionHandler;
+use Kode\Exception\Tracer\DistributedTracer;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Throwable;
@@ -32,6 +30,8 @@ class ExceptionManager
     protected bool $isRegistered = false;
     /** 单例实例 */
     protected static ?ExceptionManager $instance = null;
+    /** 链路追踪器 */
+    protected ?DistributedTracer $tracer = null;
 
     public function __construct(
         ?LoggerInterface $logger = null,
@@ -39,10 +39,8 @@ class ExceptionManager
         bool $isProduction = false
     ) {
         $this->logger = $logger ?? new NullLogger();
-        $this->formatter = $formatter ?? new JsonResponseFormatter($isProduction);
+        $this->formatter = $formatter ?? new UnifiedResponseFormatter($isProduction);
         $this->isProduction = $isProduction;
-
-        $this->registerDefaultHandlers();
     }
 
     /** 获取单例实例 */
@@ -58,24 +56,6 @@ class ExceptionManager
     public static function setInstance(self $instance): void
     {
         self::$instance = $instance;
-    }
-
-    /** 注册默认异常处理器 */
-    protected function registerDefaultHandlers(): void
-    {
-        $this->handlers[] = new HttpExceptionHandler($this->logger);
-        $this->handlers[] = new RuntimeExceptionHandler($this->logger);
-        $this->handlers[] = new GenericExceptionHandler($this->logger, $this->isProduction);
-
-        usort($this->handlers, fn($a, $b) => $b->getPriority() <=> $a->getPriority());
-    }
-
-    /** 添加自定义异常处理器 */
-    public function addHandler(ExceptionHandlerInterface $handler): self
-    {
-        $this->handlers[] = $handler;
-        usort($this->handlers, fn($a, $b) => $b->getPriority() <=> $a->getPriority());
-        return $this;
     }
 
     /** 注册全局异常处理器 */
@@ -103,11 +83,10 @@ class ExceptionManager
     /** 处理异常 */
     public function handleException(Throwable $exception): void
     {
-        foreach ($this->handlers as $handler) {
-            if ($handler->handle($exception)) {
-                break;
-            }
-        }
+        $this->logger->error('Exception: ' . $exception->getMessage(), [
+            'exception' => $exception,
+            'trace_id' => method_exists($exception, 'getTraceId') ? $exception->getTraceId() : null,
+        ]);
 
         $response = $this->formatter->format($exception);
         $statusCode = $this->determineStatusCode($exception);
@@ -140,12 +119,30 @@ class ExceptionManager
     /** 根据异常类型确定 HTTP 状态码 */
     protected function determineStatusCode(Throwable $exception): int
     {
-        if ($exception instanceof HttpException) {
-            return $exception->getHttpStatusCode();
-        }
+        if ($exception instanceof KodeException) {
+            $code = $exception->getErrorCode();
 
-        if ($exception instanceof ExceptionInterface) {
-            return 500;
+            if (in_array($code, [KodeException::CODE_UNAUTHORIZED])) {
+                return 401;
+            }
+            if (in_array($code, [KodeException::CODE_FORBIDDEN])) {
+                return 403;
+            }
+            if (in_array($code, [KodeException::CODE_NOT_FOUND, KodeException::CODE_NOT_FOUND_ENTITY])) {
+                return 404;
+            }
+            if (in_array($code, [KodeException::CODE_VALIDATION_FAILED, KodeException::CODE_INVALID_PARAM])) {
+                return 422;
+            }
+            if (in_array($code, [KodeException::CODE_TOO_MANY_REQUESTS])) {
+                return 429;
+            }
+            if (in_array($code, [KodeException::CODE_INTERNAL_ERROR, KodeException::CODE_SERVER_ERROR])) {
+                return 500;
+            }
+            if (in_array($code, [KodeException::CODE_SERVICE_UNAVAILABLE])) {
+                return 503;
+            }
         }
 
         return 500;
@@ -162,6 +159,10 @@ class ExceptionManager
         http_response_code($statusCode);
         header('Content-Type: ' . $this->formatter->getContentType());
         header('X-Trace-Id: ' . ($response['error']['trace_id'] ?? 'unknown'));
+
+        if (isset($response['error']['distributed']['span_id'])) {
+            header('X-Span-Id: ' . $response['error']['distributed']['span_id']);
+        }
 
         echo json_encode($response, JSON_THROW_ON_ERROR);
     }
@@ -190,5 +191,25 @@ class ExceptionManager
     {
         $this->logger = $logger;
         return $this;
+    }
+
+    /** 获取链路追踪器 */
+    public function getTracer(): ?DistributedTracer
+    {
+        return $this->tracer;
+    }
+
+    /** 设置链路追踪器 */
+    public function setTracer(DistributedTracer $tracer): self
+    {
+        $this->tracer = $tracer;
+        return $this;
+    }
+
+    /** 创建链路追踪器 */
+    public function createTracer(string $serviceName = 'kode-app'): DistributedTracer
+    {
+        $this->tracer = new DistributedTracer($serviceName);
+        return $this->tracer;
     }
 }

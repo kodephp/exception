@@ -1,16 +1,15 @@
 # kode/exception
 
-kode 统一异常处理包，支持 FPM / 多进程 / 多线程 / 协程环境。
+kode 统一异常处理包，支持 FPM / 多进程 / 多线程 / 协程 / 分布式环境。
 
 ## 功能特性
 
-- **多环境支持** - 完美支持 FPM、Swoole、Workerman、Fiber 协程
-- **链路追踪** - 完整异常传播链路记录，精确定位问题根源
-- **位置定位** - 自动识别项目代码与第三方库堆栈
-- **统一异常体系** - HTTP 异常、业务异常、运行时异常
-- **全局异常处理** - 自动捕获未处理异常并返回标准 JSON 响应
+- **统一异常类** - 单一 `KodeException` 类支持所有异常类型
+- **统一错误码体系** - `E1001` HTTP / `E2001` 业务 / `E3001` 运行时 / `E5001` 系统
+- **统一响应格式** - `{success, error: {code, msg, type, trace_id, ...}}`
+- **分布式链路追踪** - 支持跨机器、跨进程完整链路追踪
+- **多环境支持** - FPM、Swoole、Workerman、Fiber 协程
 - **Monolog 集成** - 完整日志支持，自动分级记录
-- **生产/开发模式** - 自动切换响应详细程度
 
 ## 安装
 
@@ -21,194 +20,164 @@ composer require kode/exception
 ## 快速开始
 
 ```php
-use Kode\Exception\ExceptionManager;
-use Kode\Exception\HttpException;
-use Kode\Exception\BusinessException;
+use Kode\Exception\KodeException;
 
-// 初始化（建议在应用入口）
+// 初始化
 $manager = new ExceptionManager();
 $manager->register();
 
-// 抛出 HTTP 异常
-throw HttpException::badRequest('参数错误');
-throw HttpException::unauthorized('未登录');
-throw HttpException::notFound('资源不存在');
+// HTTP 错误 - 4xx
+throw KodeException::bad('参数错误', ['field' => 'email']);      // E1001 400
+throw KodeException::auth('未授权');                            // E1002 401
+throw KodeException::deny('禁止访问');                          // E1003 403
+throw KodeException::notFound('资源不存在');                   // E1004 404
+throw KodeException::invalid('验证失败', ['errors' => []]);    // E1006 422
 
-// 抛出业务异常
-throw BusinessException::validationFailed('验证失败', ['field' => 'email']);
-throw BusinessException::notFound('User', '12345');
+// 业务错误
+throw KodeException::param('参数不正确');                       // E2001
+throw KodeException::missing('User', '123');                    // E2004
+throw KodeException::conflict('数据冲突');                      // E2009
+
+// 运行时错误
+throw KodeException::coroutinePanic('协程崩溃');                // E3001
+throw KodeException::workerCrash('Worker 崩溃');               // E3002
+throw KodeException::poolExhausted('连接池耗尽');              // E3003
+throw KodeException::timeout('请求超时');                       // E3004
+
+// 系统错误
+throw KodeException::memory('内存耗尽');                        // E5001
+throw KodeException::disk('磁盘空间不足');                     // E5002
 ```
+
+## 错误码体系
+
+| 范围 | 类型 | 说明 |
+|------|------|------|
+| E1xxx | HTTP | HTTP 协议相关错误 |
+| E2xxx | 业务 | 业务逻辑错误 |
+| E3xxx | 运行时 | 多进程/协程/连接池等运行时错误 |
+| E5xxx | 系统 | 系统级错误（内存、磁盘等）|
+
+## 统一响应格式
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "E1001",
+    "msg": "参数错误",
+    "type": "http",
+    "trace_id": "67f3a1b2-c8d4-e925-f6a1-3b7c9e2d4f5a",
+    "context": {"field": "email"},
+    "trace_chain": [...],
+    "distributed": {
+      "trace_id": "...",
+      "span_id": "...",
+      "parent_trace_id": "..."
+    }
+  }
+}
+```
+
+## 分布式链路追踪
+
+```php
+use Kode\Exception\Tracer\DistributedTracer;
+
+// 创建链路追踪器
+$tracer = new DistributedTracer('user-service');
+
+// 开始一个调用 span
+$spanId = $tracer->startSpan('getUser');
+
+// ... 执行逻辑 ...
+
+// 结束 span
+$tracer->endSpan($spanId);
+
+// 记录异常
+$tracer->recordException($exception);
+
+// 追踪异常链路
+$report = $tracer->trace($exception);
+
+// 导出可读报告
+echo $tracer->exportAsString($report);
+```
+
+### 链路报告示例
+
+```
+═══════════════════════════════════════════════════════
+                    链路追踪报告
+═══════════════════════════════════════════════════════
+
+【追踪ID】67f3a1b2-c8d4-e925-f6a1-3b7c9e2d4f5a
+【服务】user-service
+【运行时】fpm
+【执行时间】12.34ms
+
+【异常源头】
+  /app/Service/UserService.php:42
+  Kode\Exception\KodeException: 参数错误
+
+【调用链路】
+  [a1b2c3d4e5f67890] getUser (5.21ms) ⚠
+  [b2c3d4e5f6789012] database.query (3.12ms)
+  [c3d4e5f678901234] cache.get (1.05ms)
+
+═══════════════════════════════════════════════════════
+```
+
+## HTTP 头
+
+响应会自动包含以下 HTTP 头：
+
+- `X-Trace-Id`: 追踪 ID
+- `X-Span-Id`: 当前 Span ID
 
 ## 环境支持
 
-### FPM 模式
+### FPM
 
 ```php
-// Web 应用
-$manager = new ExceptionManager($logger, null, true);
+$manager = new ExceptionManager(null, null, true);
 $manager->register();
 ```
 
 ### Swoole 协程
 
 ```php
-use Kode\Exception\Coroutine\CoroutineExceptionHandler;
-use Kode\Exception\Coroutine\WorkerExceptionGuard;
-
-// 安全运行协程代码
-$result = CoroutineExceptionHandler::runSafely(function() {
-    return co::getCid();
-}, function($exception, $context) {
-    return ['error' => $exception->getMessage()];
-});
-
-// Worker 保护
-$guard = new WorkerExceptionGuard($logger);
-$guard->guard(function() {
-    return processRequest();
+$tracer = $manager->createTracer('swoole-service');
+go(function() {
+    $spanId = $tracer->startSpan('async-task');
+    // ...
+    $tracer->endSpan($spanId);
 });
 ```
 
-### Workerman 多进程
+### 跨服务调用
 
 ```php
-$guard = new WorkerExceptionGuard($logger);
-$guard->guardCoroutine(function() {
-    return someAsyncWork();
-}, $coroutineId);
+// 调用前设置追踪头
+$headers = $tracer->getTraceHeaders();
+$response = curl_request($url, $headers);
+
+// 被调用方自动接收父追踪
 ```
 
-## 异常类型
-
-### HttpException
-
-HTTP 异常，用于处理 HTTP 错误状态码：
-
-| 方法 | 状态码 | 描述 |
-|------|--------|------|
-| `badRequest()` | 400 | 请求参数错误 |
-| `unauthorized()` | 401 | 未授权 |
-| `forbidden()` | 403 | 禁止访问 |
-| `notFound()` | 404 | 资源不存在 |
-| `unprocessableEntity()` | 422 | 验证失败 |
-| `internalServerError()` | 500 | 服务器错误 |
-| `serviceUnavailable()` | 503 | 服务不可用 |
-
-### BusinessException
-
-业务异常，用于处理业务逻辑错误：
-
-```php
-BusinessException::invalidArgument($message, $context)  // 无效参数
-BusinessException::validationFailed($message, $context)  // 验证失败
-BusinessException::notFound($entity, $id)                // 资源不存在
-BusinessException::conflict($message, $context)         // 数据冲突
-```
-
-### RuntimeException
-
-运行时异常，用于多进程/协程环境：
-
-```php
-RuntimeException::coroutinePanic($message)   // 协程崩溃（不可恢复）
-RuntimeException::workerCrash($message)     // Worker 崩溃（可恢复）
-RuntimeException::poolExhausted($message)    // 连接池耗尽
-```
-
-## 链路追踪
-
-### ChainTracer - 链路追踪器
-
-```php
-use Kode\Exception\Tracer\ChainTracer;
-
-$tracer = new ChainTracer();
-$report = $tracer->trace($exception);
-
-// 输出链路报告
-echo $tracer->exportAsString($report);
-```
-
-### ExceptionLocator - 位置定位器
-
-```php
-use Kode\Exception\Tracer\ExceptionLocator;
-
-$locator = new ExceptionLocator();
-$location = $locator->locate($exception);
-
-echo $location->getSourceFile() . ':' . $location->getSourceLine();
-echo $location->severity; // critical / error / warning / info
-```
-
-## 响应格式
-
-```json
-{
-  "success": false,
-  "error": {
-    "code": "BAD_REQUEST",
-    "message": "参数错误",
-    "trace_id": "kode-67f3a1b2-c8d4-e925-f6a1-3b7c9e2d4f5a",
-    "context": {"field": "email"},
-    "http_status": 400,
-    "source": {
-      "file": "/app/Controller/UserController.php",
-      "line": 42,
-      "function": "updateUser"
-    }
-  }
-}
-```
-
-## 配置选项
+## 配置
 
 ```php
 use Kode\Exception\ExceptionManager;
 use Monolog\Logger;
 use Monolog\Handler\StreamHandler;
-use Kode\Exception\Formatter\JsonResponseFormatter;
 
-// 创建日志记录器
 $logger = new Logger('exception');
-$logger->pushHandler(new StreamHandler('path/to/exception.log'));
+$logger->pushHandler(new StreamHandler('exception.log'));
 
-// 创建异常管理器
-$manager = new ExceptionManager(
-    $logger,              // 日志记录器
-    null,                 // 格式化器（默认 JSON）
-    true                  // 生产模式
-);
-
-// 添加自定义处理器
-$manager->addHandler(new MyCustomHandler());
-
-// 注册全局处理器
+$manager = new ExceptionManager($logger, null, false);
 $manager->register();
-```
-
-## 工具类
-
-### TraceIdGenerator
-
-生成唯一追踪 ID：
-
-```php
-use Kode\Exception\Util\TraceIdGenerator;
-
-$traceId = TraceIdGenerator::generate();
-$traceId = TraceIdGenerator::generateFromException($exception);
-```
-
-### ExceptionTraceAnalyzer
-
-分析异常堆栈溯源：
-
-```php
-use Kode\Exception\Util\ExceptionTraceAnalyzer;
-
-$source = ExceptionTraceAnalyzer::findOriginalSource($exception);
-echo $source['file'] . ':' . $source['line'];
 ```
 
 ## 项目规范
@@ -217,11 +186,6 @@ echo $source['file'] . ':' . $source['line'];
 - 严格类型: `declare(strict_types=1);`
 - 命名空间: `Kode\Exception`
 - 测试框架: PHPUnit
-
-## 依赖
-
-- `psr/log`: ^3.0
-- `monolog/monolog`: ^3.0
 
 ## License
 
