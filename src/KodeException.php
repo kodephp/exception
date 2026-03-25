@@ -202,6 +202,47 @@ class KodeException extends \Exception
         return $this->errorContext;
     }
 
+    /** 判断是否为 HTTP 类型异常 */
+    public function isHttp(): bool
+    {
+        return $this->errorType === self::TYPE_HTTP;
+    }
+
+    /** 判断是否为业务类型异常 */
+    public function isBusiness(): bool
+    {
+        return $this->errorType === self::TYPE_BUSINESS;
+    }
+
+    /** 判断是否为运行时异常 */
+    public function isRuntime(): bool
+    {
+        return $this->errorType === self::TYPE_RUNTIME;
+    }
+
+    /** 判断是否为系统异常 */
+    public function isSystem(): bool
+    {
+        return $this->errorType === self::TYPE_SYSTEM;
+    }
+
+    /** 获取 HTTP 状态码 */
+    public function getHttpStatusCode(): int
+    {
+        return match ($this->errorCode) {
+            self::CODE_BAD_REQUEST => 400,
+            self::CODE_UNAUTHORIZED => 401,
+            self::CODE_FORBIDDEN => 403,
+            self::CODE_NOT_FOUND => 404,
+            self::CODE_METHOD_NOT_ALLOWED => 405,
+            self::CODE_VALIDATION_FAILED => 422,
+            self::CODE_TOO_MANY_REQUESTS => 429,
+            self::CODE_INTERNAL_ERROR, self::CODE_SERVER_ERROR => 500,
+            self::CODE_SERVICE_UNAVAILABLE => 503,
+            default => 500,
+        };
+    }
+
     /** 获取异常位置信息 */
     public function getLocation(): array
     {
@@ -394,5 +435,50 @@ class KodeException extends \Exception
     public static function disk(string $msg = '磁盘空间不足', ?Throwable $previous = null): self
     {
         return new self(self::CODE_DISK_FULL, $msg, $previous, self::TYPE_SYSTEM);
+    }
+
+    // ==================== 增强方法 ====================
+
+    /** 从已有异常创建（保留原始信息） */
+    public static function from(Throwable $exception, ?string $errorCode = null, ?string $errorMsg = null): self
+    {
+        $code = $errorCode ?? 'E9999';
+        $msg = $errorMsg ?? $exception->getMessage();
+
+        if ($exception instanceof self) {
+            return $exception;
+        }
+
+        return new self($code, $msg, $exception, self::TYPE_SYSTEM);
+    }
+
+    /** 重新抛出为 KodeException */
+    public static function rethrow(Throwable $exception, string $errorCode, string $errorMsg, string $type = self::TYPE_SYSTEM): self
+    {
+        return new self($errorCode, $errorMsg, $exception, $type);
+    }
+
+    /** 验证是否为指定错误码 */
+    public function isCode(string $code): bool
+    {
+        return $this->errorCode === $code;
+    }
+
+    /** 验证是否匹配多个错误码之一 */
+    public function isCodeIn(array $codes): bool
+    {
+        return in_array($this->errorCode, $codes, true);
+    }
+
+    /** 获取简化的错误描述 */
+    public function getSummary(): string
+    {
+        return sprintf(
+            '[%s] %s (%s:%d)',
+            $this->errorCode,
+            $this->errorMsg,
+            basename($this->getFile()),
+            $this->getLine()
+        );
     }
 }

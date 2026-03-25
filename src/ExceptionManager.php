@@ -158,10 +158,10 @@ class ExceptionManager
 
         http_response_code($statusCode);
         header('Content-Type: ' . $this->formatter->getContentType());
-        header('X-Trace-Id: ' . ($response['error']['trace_id'] ?? 'unknown'));
+        header('X-Trace-Id: ' . ($response['trace_id'] ?? 'unknown'));
 
-        if (isset($response['error']['distributed']['span_id'])) {
-            header('X-Span-Id: ' . $response['error']['distributed']['span_id']);
+        if (isset($response['span_id'])) {
+            header('X-Span-Id: ' . $response['span_id']);
         }
 
         echo json_encode($response, JSON_THROW_ON_ERROR);

@@ -231,6 +231,39 @@ $chain = $e->getCallChain();
 // [['file' => ..., 'line' => ..., 'method' => '...()'], ...]
 ```
 
+## 类型判断方法
+
+```php
+$e = KodeException::bad('参数错误');
+
+// 判断异常类型
+$e->isHttp();      // true
+$e->isBusiness();  // false
+$e->isRuntime();   // false
+$e->isSystem();    // false
+
+// 获取 HTTP 状态码
+$e->getHttpStatusCode(); // 400
+
+// 判断错误码
+$e->isCode('E1001');           // true
+$e->isCodeIn(['E1001','E1002']); // true
+```
+
+## 异常转换
+
+```php
+// 将任意异常转换为 KodeException
+$original = new RuntimeException('原始错误');
+$kode = KodeException::from($original, 'E9999', '包装后的错误');
+
+// 重新抛出为 KodeException
+$kode = KodeException::rethrow($original, 'E3001', '运行时错误', KodeException::TYPE_RUNTIME);
+
+// 获取简化描述
+$e->getSummary(); // [E1001] 参数错误 (UserService.php:42)
+```
+
 ## 项目规范
 
 - PHP 版本: >=8.1
