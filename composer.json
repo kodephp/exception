@@ -1,0 +1,36 @@
+{
+    "name": "kode/exception",
+    "description": "kode 统一异常处理包 - 支持多进程、多线程、协程环境",
+    "type": "library",
+    "license": "MIT",
+    "version": "1.1.0",
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "require": {
+        "php": ">=8.1",
+        "psr/log": "^3.0",
+        "monolog/monolog": "^3.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kode\\Exception\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Kode\\Exception\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "repositories": [
+        {
+            "type": "git",
+            "url": "https://github.com/kodephp/exception.git"
+        }
+    ]
+}

@@ -1,0 +1,12 @@
+.phpunit.result.cache
+.phpunit.cache/
+vendor/
+*.log
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.trae/
+composer.lock
