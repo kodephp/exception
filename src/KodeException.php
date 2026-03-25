@@ -18,7 +18,7 @@ class KodeException extends BaseException
     public const TYPE_RUNTIME = 'runtime';
     public const TYPE_SYSTEM = 'system';
 
-    /** HTTP 错误码 (1xxx) */
+    /** HTTP 错误码 (E1xxx) */
     public const CODE_BAD_REQUEST       = 'E1001';
     public const CODE_UNAUTHORIZED      = 'E1002';
     public const CODE_FORBIDDEN         = 'E1003';
@@ -30,20 +30,20 @@ class KodeException extends BaseException
     public const CODE_SERVER_ERROR       = 'E1501';
     public const CODE_SERVICE_UNAVAILABLE = 'E1503';
 
-    /** 业务错误码 (2xxx) */
+    /** 业务错误码 (E2xxx) */
     public const CODE_INVALID_PARAM     = 'E2001';
     public const CODE_NOT_FOUND_ENTITY  = 'E2004';
     public const CODE_CONFLICT         = 'E2009';
     public const CODE_DEPRECATED       = 'E2010';
 
-    /** 运行时错误码 (3xxx) */
+    /** 运行时错误码 (E3xxx) */
     public const CODE_COROUTINE_PANIC   = 'E3001';
     public const CODE_WORKER_CRASH       = 'E3002';
     public const CODE_POOL_EXHAUSTED    = 'E3003';
     public const CODE_TIMEOUT            = 'E3004';
     public const CODE_DEADLOCK           = 'E3005';
 
-    /** 系统错误码 (5xxx) */
+    /** 系统错误码 (E5xxx) */
     public const CODE_MEMORY_EXHAUSTED  = 'E5001';
     public const CODE_DISK_FULL          = 'E5002';
 
@@ -55,12 +55,10 @@ class KodeException extends BaseException
     protected string $errorMsg;
     /** @var array 错误上下文 */
     protected array $errorContext = [];
-    /** @var string|null 追踪ID */
+    /** @var string 追踪ID */
     protected string $traceId = '';
-    /** @var array 原始追踪数据 */
-    protected array $traceChain = [];
-    /** @var array 分布式追踪头 */
-    protected array $distributedTrace = [];
+    /** @var array 调用链路 */
+    protected array $callChain = [];
 
     public function __construct(
         string $errorCode,
@@ -78,48 +76,82 @@ class KodeException extends BaseException
         $code = hexdec(substr($errorCode, 1)) ?: 0;
         parent::__construct($errorMsg, $code, $previous, $errorCode, $context);
 
-        $this->loadTraceChain($previous);
+        $this->loadCallChain($previous);
     }
 
-    /** 加载追踪链路 */
-    protected function loadTraceChain(?Throwable $previous): void
+    /** 加载调用链路 */
+    protected function loadCallChain(?Throwable $previous): void
     {
-        $this->traceChain = [
-            [
-                'file' => $this->getFile(),
-                'line' => $this->getLine(),
-                'time' => microtime(true),
-            ]
-        ];
+        $this->callChain = $this->buildCallChain($this->getTrace(), $previous);
+    }
 
-        if ($previous !== null) {
-            $this->traceChain[] = [
-                'file' => $previous->getFile(),
-                'line' => $previous->getLine(),
-                'message' => $previous->getMessage(),
-                'time' => microtime(true),
-                'previous' => true,
+    /** 构建调用链路 */
+    protected function buildCallChain(array $trace, ?Throwable $previous): array
+    {
+        $chain = [];
+        $skipPrefixes = ['Kode\\Exception\\', 'Monolog\\', 'Psr\\Log\\'];
+
+        foreach ($trace as $index => $frame) {
+            if ($index >= 15) break;
+
+            if (isset($frame['class'])) {
+                $skip = false;
+                foreach ($skipPrefixes as $prefix) {
+                    if (str_starts_with($frame['class'], $prefix)) {
+                        $skip = true;
+                        break;
+                    }
+                }
+                if ($skip) continue;
+            }
+
+            $chain[] = [
+                'file' => $frame['file'] ?? 'unknown',
+                'line' => $frame['line'] ?? 0,
+                'method' => $this->formatMethod($frame),
+                'args' => $this->formatArgs($frame['args'] ?? []),
             ];
         }
 
-        $this->loadDistributedTrace();
+        if ($previous !== null) {
+            $chain[] = [
+                'file' => $previous->getFile(),
+                'line' => $previous->getLine(),
+                'method' => get_class($previous) . '::__construct',
+                'msg' => $previous->getMessage(),
+                'is_previous' => true,
+            ];
+        }
+
+        return $chain;
     }
 
-    /** 加载分布式追踪头 */
-    protected function loadDistributedTrace(): void
+    /** 格式化方法名 */
+    protected function formatMethod(array $frame): string
     {
-        $this->distributedTrace = [
-            'trace_id' => $this->traceId,
-            'span_id' => $this->generateSpanId(),
-            'timestamp' => microtime(true),
-        ];
+        $method = '';
+        if (isset($frame['class'])) {
+            $method .= $frame['class'] . ($frame['type'] ?? '::');
+        }
+        $method .= ($frame['function'] ?? 'unknown') . '()';
+        return $method;
+    }
 
-        if (isset($_SERVER['HTTP_X_TRACE_ID'])) {
-            $this->distributedTrace['parent_trace_id'] = $_SERVER['HTTP_X_TRACE_ID'];
-        }
-        if (isset($_SERVER['HTTP_X_SPAN_ID'])) {
-            $this->distributedTrace['parent_span_id'] = $_SERVER['HTTP_X_SPAN_ID'];
-        }
+    /** 格式化参数 */
+    protected function formatArgs(array $args): array
+    {
+        return array_map(function ($arg) {
+            if (is_object($arg)) {
+                return get_class($arg) . '#' . spl_object_id($arg);
+            }
+            if (is_array($arg)) {
+                return 'array[' . count($arg) . ']';
+            }
+            if (is_string($arg) && strlen($arg) > 30) {
+                return substr($arg, 0, 27) . '...';
+            }
+            return var_export($arg, true);
+        }, array_slice($args, 0, 3));
     }
 
     /** 生成 TraceId */
@@ -133,12 +165,6 @@ class KodeException extends BaseException
             mt_rand(0, 0x3fff) | 0x8000,
             mt_rand(0, 0xffffffffffff)
         );
-    }
-
-    /** 生成 SpanId */
-    protected function generateSpanId(): string
-    {
-        return sprintf('%016x', mt_rand(0, PHP_INT_MAX));
     }
 
     public function getErrorCode(): string
@@ -163,22 +189,39 @@ class KodeException extends BaseException
 
     public function getTraceId(): string
     {
-        return $this->traceId ?? '';
+        return $this->traceId;
     }
 
-    public function getTraceChain(): array
+    public function getCallChain(): array
     {
-        return $this->traceChain;
-    }
-
-    public function getDistributedTrace(): array
-    {
-        return $this->distributedTrace;
+        return $this->callChain;
     }
 
     public function getContext(): array
     {
         return $this->errorContext;
+    }
+
+    /** 获取异常位置信息 */
+    public function getLocation(): array
+    {
+        return [
+            'file' => $this->getFile(),
+            'line' => $this->getLine(),
+            'method' => $this->getCallerMethod(),
+        ];
+    }
+
+    /** 获取调用者方法 */
+    protected function getCallerMethod(): string
+    {
+        $trace = $this->getTrace();
+        foreach ($trace as $frame) {
+            if (isset($frame['file']) && str_starts_with($frame['file'], defined('APP_ROOT') ? APP_ROOT : dirname(__DIR__))) {
+                return $this->formatMethod($frame);
+            }
+        }
+        return isset($trace[0]) ? $this->formatMethod($trace[0]) : 'unknown';
     }
 
     public function toArray(): array
@@ -188,19 +231,20 @@ class KodeException extends BaseException
             'msg' => $this->errorMsg,
             'type' => $this->errorType,
             'trace_id' => $this->traceId,
+            'location' => [
+                'file' => $this->getFile(),
+                'line' => $this->getLine(),
+                'method' => $this->getCallerMethod(),
+            ],
             'context' => $this->errorContext,
-            'trace_chain' => $this->traceChain,
-            'distributed' => $this->distributedTrace,
+            'chain' => $this->callChain,
         ];
     }
 
     /** 转换为统一响应格式 */
     public function toResponse(): array
     {
-        return [
-            'success' => false,
-            'error' => $this->toArray(),
-        ];
+        return $this->toArray();
     }
 
     /** 设置上下文 */
@@ -208,19 +252,6 @@ class KodeException extends BaseException
     {
         $new = clone $this;
         $new->errorContext = array_merge($this->errorContext, $context);
-        return $new;
-    }
-
-    /** 添加追踪节点 */
-    public function addTracePoint(string $file, int $line, ?string $message = null): self
-    {
-        $new = clone $this;
-        $new->traceChain[] = [
-            'file' => $file,
-            'line' => $line,
-            'message' => $message,
-            'time' => microtime(true),
-        ];
         return $new;
     }
 

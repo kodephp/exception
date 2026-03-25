@@ -3,7 +3,7 @@
     "description": "kode 统一异常处理包 - 支持 FPM/多进程/多线程/协程/分布式环境",
     "type": "library",
     "license": "MIT",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "minimum-stability": "stable",
     "prefer-stable": true,
     "require": {

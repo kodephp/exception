@@ -9,19 +9,19 @@ use Throwable;
 
 /**
  * 统一响应格式化器
- * 输出格式: {success: bool, error: {code, msg, type, ...}}
+ * 输出格式: 直接返回 {code, msg, type, trace_id, location, chain, ...}
  */
 class UnifiedResponseFormatter implements ResponseFormatterInterface
 {
-    /** 是否生产模式 */
+    /** @var bool 是否生产模式 */
     protected bool $isProduction;
-    /** 是否包含完整链路 */
-    protected bool $includeTraceChain;
+    /** @var bool 是否包含完整链路 */
+    protected bool $includeChain;
 
-    public function __construct(bool $isProduction = false, bool $includeTraceChain = true)
+    public function __construct(bool $isProduction = false, bool $includeChain = true)
     {
         $this->isProduction = $isProduction;
-        $this->includeTraceChain = $includeTraceChain;
+        $this->includeChain = $includeChain;
     }
 
     public function format(Throwable $exception): array
@@ -35,53 +35,47 @@ class UnifiedResponseFormatter implements ResponseFormatterInterface
 
     protected function formatKodeException(KodeException $exception): array
     {
-        $error = [
+        $response = [
             'code' => $exception->getErrorCode(),
             'msg' => $exception->getErrorMsg(),
             'type' => $exception->getErrorType(),
             'trace_id' => $exception->getTraceId(),
         ];
 
+        $response['location'] = $exception->getLocation();
+
         $context = $exception->getErrorContext();
         if (!empty($context)) {
-            $error['context'] = $context;
+            $response['context'] = $context;
         }
 
-        if ($this->includeTraceChain) {
-            $error['trace'] = $exception->getTraceChain();
-            $error['distributed'] = $exception->getDistributedTrace();
+        if ($this->includeChain) {
+            $response['chain'] = $exception->getCallChain();
         }
 
-        if (!$this->isProduction) {
-            $error['file'] = $exception->getFile();
-            $error['line'] = $exception->getLine();
-        }
-
-        return [
-            'success' => false,
-            'error' => $error,
-        ];
+        return $response;
     }
 
     protected function formatGenericException(Throwable $exception): array
     {
-        $error = [
+        $response = [
             'code' => 'E9999',
             'msg' => $this->isProduction ? '系统异常' : $exception->getMessage(),
             'type' => 'system',
             'trace_id' => $this->generateTempTraceId(),
+            'location' => [
+                'file' => $exception->getFile(),
+                'line' => $exception->getLine(),
+                'method' => get_class($exception),
+            ],
         ];
 
         if (!$this->isProduction) {
-            $error['file'] = $exception->getFile();
-            $error['line'] = $exception->getLine();
-            $error['class'] = get_class($exception);
+            $response['class'] = get_class($exception);
+            $response['chain'] = $this->buildSimpleChain($exception->getTrace());
         }
 
-        return [
-            'success' => false,
-            'error' => $error,
-        ];
+        return $response;
     }
 
     protected function generateTempTraceId(): string
@@ -96,24 +90,31 @@ class UnifiedResponseFormatter implements ResponseFormatterInterface
         );
     }
 
+    protected function buildSimpleChain(array $trace): array
+    {
+        $chain = [];
+        foreach (array_slice($trace, 0, 10) as $frame) {
+            $chain[] = [
+                'file' => $frame['file'] ?? 'unknown',
+                'line' => $frame['line'] ?? 0,
+                'method' => $this->formatMethod($frame),
+            ];
+        }
+        return $chain;
+    }
+
+    protected function formatMethod(array $frame): string
+    {
+        $method = '';
+        if (isset($frame['class'])) {
+            $method .= $frame['class'] . ($frame['type'] ?? '::');
+        }
+        $method .= ($frame['function'] ?? 'unknown') . '()';
+        return $method;
+    }
+
     public function getContentType(): string
     {
         return 'application/json';
-    }
-
-    public function formatChainReport(array $report): array
-    {
-        return [
-            'success' => false,
-            'error' => [
-                'code' => $report['error_code'] ?? 'E9999',
-                'msg' => $report['message'] ?? '链路追踪报告',
-                'type' => 'chain_report',
-                'trace_id' => $report['trace_id'] ?? '',
-                'chain' => $report['chain'] ?? [],
-                'source' => $report['source'] ?? null,
-                'environment' => $report['environment'] ?? [],
-            ],
-        ];
     }
 }
