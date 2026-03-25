@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Logger;
 
-use Kode\Exception\ExceptionInterface;
 use Throwable;
 
 /**
@@ -13,9 +12,7 @@ use Throwable;
  */
 class TraceProcessor
 {
-    /** 最大追踪深度 */
     protected int $maxDepth = 10;
-    /** 跳过的类名前缀 */
     protected array $skipClasses = [
         'Kode\\Exception\\',
         'Monolog\\',
@@ -33,7 +30,6 @@ class TraceProcessor
         return $record;
     }
 
-    /** 处理异常信息 */
     public function processException(Throwable $exception): array
     {
         $data = [
@@ -44,10 +40,12 @@ class TraceProcessor
             'line' => $exception->getLine(),
         ];
 
-        if ($exception instanceof ExceptionInterface) {
-            $data['error_code'] = $exception->getErrorCode();
+        if ($exception instanceof \Kode\Exception\KodeException) {
+            $data['code'] = $exception->getErrorCode();
+            $data['msg'] = $exception->getErrorMsg();
+            $data['type'] = $exception->getErrorType();
             $data['trace_id'] = $exception->getTraceId();
-            $data['context'] = $exception->getContext();
+            $data['context'] = $exception->getErrorContext();
         }
 
         $data['trace'] = $this->processTrace($exception->getTrace());
@@ -59,7 +57,6 @@ class TraceProcessor
         return $data;
     }
 
-    /** 处理堆栈追踪 */
     protected function processTrace(array $trace): array
     {
         $processed = [];
@@ -87,19 +84,17 @@ class TraceProcessor
         return $processed;
     }
 
-    /** 格式化函数调用 */
     protected function formatFunction(array $frame): string
     {
         $function = $frame['function'] ?? '';
 
         if (isset($frame['class'])) {
-            return $frame['class'] . $frame['type'] . $function;
+            return $frame['class'] . ($frame['type'] ?? '::') . $function;
         }
 
         return $function;
     }
 
-    /** 是否应该跳过该类 */
     protected function shouldSkipClass(string $class): bool
     {
         foreach ($this->skipClasses as $prefix) {
@@ -111,14 +106,12 @@ class TraceProcessor
         return false;
     }
 
-    /** 设置最大追踪深度 */
     public function setMaxDepth(int $depth): self
     {
         $this->maxDepth = $depth;
         return $this;
     }
 
-    /** 添加跳过的类名前缀 */
     public function addSkipClass(string $classPrefix): self
     {
         $this->skipClasses[] = $classPrefix;

@@ -4,14 +4,10 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Coroutine;
 
-use Error;
-use Kode\ExceptionManager;
-use Kode\Exception\ExceptionInterface;
-use Kode\Exception\HttpException;
-use Kode\Exception\RuntimeException;
+use Kode\Exception\ExceptionManager;
+use Kode\Exception\KodeException;
 use Psr\Log\LoggerInterface;
 use Throwable;
-use TypeError;
 
 /**
  * Worker 进程异常保护器
@@ -19,17 +15,11 @@ use TypeError;
  */
 class WorkerExceptionGuard
 {
-    /** @var LoggerInterface 日志记录器 */
     protected LoggerInterface $logger;
-    /** 异常管理器 */
     protected ExceptionManager $exceptionManager;
-    /** 是否 Worker 环境 */
     protected bool $isWorker;
-    /** 最大重试次数 */
     protected int $maxRetries;
-    /** 当前重试计数 */
     protected int $retryCount = 0;
-    /** 失败的协程列表 */
     protected array $failedCoroutines = [];
 
     public function __construct(
@@ -43,7 +33,6 @@ class WorkerExceptionGuard
         $this->maxRetries = $maxRetries;
     }
 
-    /** 检测 Worker 环境 */
     protected function detectWorkerEnvironment(): bool
     {
         return (
@@ -54,7 +43,6 @@ class WorkerExceptionGuard
         );
     }
 
-    /** 保护执行回调 */
     public function guard(callable $callback): mixed
     {
         try {
@@ -64,7 +52,6 @@ class WorkerExceptionGuard
         }
     }
 
-    /** 保护协程执行 */
     public function guardCoroutine(callable $callback, string $coroutineId): mixed
     {
         $context = new CoroutineExceptionContext();
@@ -79,7 +66,6 @@ class WorkerExceptionGuard
         }
     }
 
-    /** 处理 Worker 异常 */
     protected function handleWorkerException(Throwable $exception): mixed
     {
         $this->logException($exception);
@@ -96,7 +82,6 @@ class WorkerExceptionGuard
         return $this->returnErrorResponse($exception);
     }
 
-    /** 处理协程异常 */
     protected function handleCoroutineException(
         Throwable $exception,
         string $coroutineId,
@@ -108,11 +93,12 @@ class WorkerExceptionGuard
             'timestamp' => time(),
         ];
 
-        if ($exception instanceof RuntimeException && !$exception->isRecoverable()) {
+        if ($exception instanceof KodeException && !$exception->isRecoverable()) {
+            $ctx = $exception->getErrorContext();
             $this->logger->critical('不可恢复的协程异常', [
                 'coroutine_id' => $coroutineId,
                 'exception' => $exception->getMessage(),
-                'suggestion' => $exception->getSuggestion(),
+                'suggestion' => $ctx['suggestion'] ?? '',
             ]);
 
             $this->notifyWorkerSupervisor($coroutineId, $exception);
@@ -123,24 +109,25 @@ class WorkerExceptionGuard
         return $this->returnErrorResponse($exception);
     }
 
-    /** 是否为关键异常 */
     protected function isCriticalException(Throwable $exception): bool
     {
-        if ($exception instanceof ExceptionInterface) {
-            return $exception instanceof RuntimeException && !$exception->isRecoverable();
+        if ($exception instanceof \Error) {
+            return true;
         }
 
-        return $exception instanceof \Error;
+        if ($exception instanceof \TypeError) {
+            return true;
+        }
+
+        return false;
     }
 
-    /** 处理关键异常 */
     protected function handleCriticalException(Throwable $exception): void
     {
         $this->logger->emergency('Worker 中的关键异常', [
             'message' => $exception->getMessage(),
             'file' => $exception->getFile(),
             'line' => $exception->getLine(),
-            'trace' => $exception->getTraceAsString(),
         ]);
 
         $this->notifyWorkerSupervisor('main', $exception);
@@ -150,19 +137,16 @@ class WorkerExceptionGuard
         }
     }
 
-    /** 是否应该重试 */
     protected function shouldRetry(Throwable $exception): bool
     {
-        if ($exception instanceof ExceptionInterface) {
-            if ($exception instanceof HttpException) {
-                return in_array($exception->getHttpStatusCode(), [502, 503, 504]);
-            }
+        if ($exception instanceof KodeException) {
+            $code = $exception->getErrorCode();
+            return in_array($code, [KodeException::CODE_SERVICE_UNAVAILABLE]);
         }
 
         return false;
     }
 
-    /** 重试或失败 */
     protected function retryOrFail(Throwable $exception): mixed
     {
         $this->retryCount++;
@@ -187,13 +171,11 @@ class WorkerExceptionGuard
         return $this->returnErrorResponse($exception);
     }
 
-    /** 返回错误响应 */
     protected function returnErrorResponse(Throwable $exception): mixed
     {
         return $this->exceptionManager->format($exception);
     }
 
-    /** 记录异常日志 */
     protected function logException(Throwable $exception, array $extraContext = []): void
     {
         $context = array_merge([
@@ -203,10 +185,10 @@ class WorkerExceptionGuard
             'line' => $exception->getLine(),
         ], $extraContext);
 
-        if ($exception instanceof ExceptionInterface) {
-            $context['error_code'] = $exception->getErrorCode();
+        if ($exception instanceof KodeException) {
+            $context['code'] = $exception->getErrorCode();
             $context['trace_id'] = $exception->getTraceId();
-            $context['context'] = $exception->getContext();
+            $context['context'] = $exception->getErrorContext();
 
             $this->logger->error('异常已记录', $context);
         } else {
@@ -214,7 +196,6 @@ class WorkerExceptionGuard
         }
     }
 
-    /** 通知 Worker 监督者 */
     protected function notifyWorkerSupervisor(string $coroutineId, Throwable $exception): void
     {
         if (function_exists('swoole_server_getswmaster')) {
@@ -225,32 +206,27 @@ class WorkerExceptionGuard
         }
     }
 
-    /** 是否应该退出 Worker */
     protected function shouldExitWorker(Throwable $exception): bool
     {
         return $exception instanceof \Error || $exception instanceof \TypeError;
     }
 
-    /** 退出 Worker */
     protected function exitWorker(int $code): void
     {
         $this->logger->info('Worker 退出', ['code' => $code]);
         exit($code);
     }
 
-    /** 获取失败的协程列表 */
     public function getFailedCoroutines(): array
     {
         return $this->failedCoroutines;
     }
 
-    /** 清除失败的协程列表 */
     public function clearFailedCoroutines(): void
     {
         $this->failedCoroutines = [];
     }
 
-    /** 是否为 Worker 环境 */
     public function isWorkerEnvironment(): bool
     {
         return $this->isWorker;

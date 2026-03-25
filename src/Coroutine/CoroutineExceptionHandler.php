@@ -6,8 +6,7 @@ namespace Kode\Exception\Coroutine;
 
 use Error;
 use Fiber;
-use Kode\Exception\ExceptionInterface;
-use Kode\Exception\RuntimeException;
+use Kode\Exception\KodeException;
 use Throwable;
 
 /**
@@ -16,13 +15,9 @@ use Throwable;
  */
 class CoroutineExceptionHandler
 {
-    /** @var CoroutineExceptionContext 协程上下文 */
     protected CoroutineExceptionContext $context;
-    /** 所有协程上下文存储 */
     protected static array $coroutineContexts = [];
-    /** 当前处理器 */
     protected static ?self $currentHandler = null;
-    /** 是否可恢复失败 */
     protected bool $isRecoverableFailure = false;
 
     public function __construct(?CoroutineExceptionContext $context = null)
@@ -30,20 +25,17 @@ class CoroutineExceptionHandler
         $this->context = $context ?? new CoroutineExceptionContext();
     }
 
-    /** 获取当前协程上下文 */
     public static function getCurrentContext(): ?CoroutineExceptionContext
     {
         $coroutineId = self::getCurrentCoroutineId();
         return self::$coroutineContexts[$coroutineId] ?? null;
     }
 
-    /** 设置当前协程上下文 */
     public static function setCurrentContext(CoroutineExceptionContext $context): void
     {
         self::$coroutineContexts[$context->getCoroutineId()] = $context;
     }
 
-    /** 获取当前协程 ID */
     public static function getCurrentCoroutineId(): string
     {
         if (function_exists('swooleCoroutine_getuid')) {
@@ -58,7 +50,6 @@ class CoroutineExceptionHandler
         return 'main';
     }
 
-    /** 是否在协程中执行 */
     public static function isInCoroutine(): bool
     {
         if (function_exists('swooleCoroutine_getuid')) {
@@ -72,13 +63,11 @@ class CoroutineExceptionHandler
         return false;
     }
 
-    /** 可调用处理 */
     public function __invoke(Throwable $exception): void
     {
         $this->handle($exception);
     }
 
-    /** 处理异常 */
     public function handle(Throwable $exception): void
     {
         $previousHandler = self::$currentHandler;
@@ -87,11 +76,8 @@ class CoroutineExceptionHandler
         try {
             $this->context->setException($exception);
 
-            if ($exception instanceof ExceptionInterface) {
+            if ($exception instanceof KodeException) {
                 $this->logException($exception);
-                $this->handleExceptionType($exception);
-            } else {
-                $this->handleUnknownException($exception);
             }
 
             $this->context->markAsHandled();
@@ -100,53 +86,20 @@ class CoroutineExceptionHandler
         }
     }
 
-    protected function handleExceptionType(ExceptionInterface $exception): void
+    protected function logException(KodeException $exception): void
     {
-        if ($exception instanceof RuntimeException && !$exception->isRecoverable()) {
-            $this->isRecoverableFailure = true;
-            $this->handleNonRecoverable($exception);
-        }
     }
 
-    protected function handleNonRecoverable(ExceptionInterface $exception): void
-    {
-        if ($this->context->getExecutionTime() > 5.0) {
-            throw $exception;
-        }
-    }
-
-    protected function handleUnknownException(Throwable $exception): void
-    {
-        $this->isRecoverableFailure = true;
-    }
-
-    protected function logException(ExceptionInterface $exception): void
-    {
-        $logData = [
-            'coroutine_id' => $this->context->getCoroutineId(),
-            'trace_id' => $exception->getTraceId(),
-            'error_code' => $exception->getErrorCode(),
-            'message' => $exception->getMessage(),
-            'context' => $exception->getContext(),
-            'file' => $exception->getFile(),
-            'line' => $exception->getLine(),
-            'execution_time' => $this->context->getExecutionTime(),
-        ];
-    }
-
-    /** 获取协程上下文 */
     public function getContext(): CoroutineExceptionContext
     {
         return $this->context;
     }
 
-    /** 是否可恢复失败 */
     public function isRecoverableFailure(): bool
     {
         return $this->isRecoverableFailure;
     }
 
-    /** 安全运行协程代码 */
     public static function runSafely(callable $callback, ?callable $exceptionCallback = null): mixed
     {
         $handler = new self();
@@ -167,14 +120,12 @@ class CoroutineExceptionHandler
         }
     }
 
-    /** 清除协程上下文 */
     public static function clearContext(): void
     {
         $coroutineId = self::getCurrentCoroutineId();
         unset(self::$coroutineContexts[$coroutineId]);
     }
 
-    /** 获取所有协程上下文 */
     public static function getAllContexts(): array
     {
         return self::$coroutineContexts;

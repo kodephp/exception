@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Formatter;
 
-use Kode\Exception\ExceptionInterface;
-use Kode\Exception\HttpException;
 use Throwable;
 
 /**
@@ -13,9 +11,7 @@ use Throwable;
  */
 interface ResponseFormatterInterface
 {
-    /** 格式化异常为数组 */
     public function format(Throwable $exception): array;
 
-    /** 获取 Content-Type */
     public function getContentType(): string;
 }

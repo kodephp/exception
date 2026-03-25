@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Handler;
 
-use Kode\Exception\ExceptionInterface;
+use Kode\Exception\KodeException;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
@@ -14,9 +14,7 @@ use Throwable;
  */
 class GenericExceptionHandler implements ExceptionHandlerInterface
 {
-    /** @var LoggerInterface 日志记录器 */
     protected LoggerInterface $logger;
-    /** 是否生产模式 */
     protected bool $isProduction;
 
     public function __construct(LoggerInterface $logger, bool $isProduction = false)
@@ -27,26 +25,24 @@ class GenericExceptionHandler implements ExceptionHandlerInterface
 
     public function handle(Throwable $exception): bool
     {
-        if ($exception instanceof ExceptionInterface) {
-            $this->logger->error('通用异常', [
-                'error_code' => $exception->getErrorCode(),
-                'message' => $exception->getMessage(),
+        if ($exception instanceof KodeException) {
+            $this->logger->error('异常', [
+                'code' => $exception->getErrorCode(),
+                'msg' => $exception->getErrorMsg(),
+                'type' => $exception->getErrorType(),
                 'trace_id' => $exception->getTraceId(),
-                'context' => $exception->getContext(),
-                'file' => $exception->getFile(),
-                'line' => $exception->getLine(),
-                'trace' => $this->isProduction ? null : $exception->getTraceAsString(),
+                'context' => $exception->getErrorContext(),
+                'location' => $exception->getLocation(),
             ]);
 
             return true;
         }
 
         $this->logger->critical('未知异常', [
-            'message' => $exception->getMessage(),
+            'msg' => $exception->getMessage(),
             'class' => get_class($exception),
             'file' => $exception->getFile(),
             'line' => $exception->getLine(),
-            'trace' => $this->isProduction ? null : $exception->getTraceAsString(),
         ]);
 
         return true;

@@ -10,7 +10,7 @@ use Throwable;
  * 统一异常类
  * 支持 HTTP、业务、运行时等所有异常类型，统一 error_code 错误码体系
  */
-class KodeException extends BaseException
+class KodeException extends \Exception
 {
     /** 错误类型枚举 */
     public const TYPE_HTTP = 'http';
@@ -74,7 +74,7 @@ class KodeException extends BaseException
         $this->traceId = $this->generateTraceId();
 
         $code = hexdec(substr($errorCode, 1)) ?: 0;
-        parent::__construct($errorMsg, $code, $previous, $errorCode, $context);
+        parent::__construct($errorMsg, $code, $previous);
 
         $this->loadCallChain($previous);
     }
@@ -215,9 +215,10 @@ class KodeException extends BaseException
     /** 获取调用者方法 */
     protected function getCallerMethod(): string
     {
+        $basePath = defined('APP_ROOT') ? constant('APP_ROOT') : dirname(__DIR__);
         $trace = $this->getTrace();
         foreach ($trace as $frame) {
-            if (isset($frame['file']) && str_starts_with($frame['file'], defined('APP_ROOT') ? APP_ROOT : dirname(__DIR__))) {
+            if (isset($frame['file']) && str_starts_with($frame['file'], $basePath)) {
                 return $this->formatMethod($frame);
             }
         }

@@ -4,10 +4,6 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Handler;
 
-use Kode\Exception\ExceptionInterface;
-use Kode\Exception\HttpException;
-use Kode\Exception\RuntimeException;
-use Psr\Log\LoggerInterface;
 use Throwable;
 
 /**

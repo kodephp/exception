@@ -4,8 +4,7 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Formatter;
 
-use Kode\Exception\ExceptionInterface;
-use Kode\Exception\HttpException;
+use Kode\Exception\KodeException;
 use Throwable;
 
 /**
@@ -14,9 +13,7 @@ use Throwable;
  */
 class JsonResponseFormatter implements ResponseFormatterInterface
 {
-    /** 是否生产模式 */
     protected bool $isProduction;
-    /** 是否包含堆栈追踪 */
     protected bool $includeTrace;
 
     public function __construct(bool $isProduction = false, bool $includeTrace = false)
@@ -30,39 +27,32 @@ class JsonResponseFormatter implements ResponseFormatterInterface
         $response = [
             'success' => false,
             'error' => [
-                'message' => $this->isProduction && !($exception instanceof ExceptionInterface)
-                    ? 'An internal error occurred'
-                    : $exception->getMessage(),
+                'message' => $exception->getMessage(),
             ],
         ];
 
-        if ($exception instanceof ExceptionInterface) {
+        if ($exception instanceof KodeException) {
             $response['error']['code'] = $exception->getErrorCode();
+            $response['error']['msg'] = $exception->getErrorMsg();
+            $response['error']['type'] = $exception->getErrorType();
             $response['error']['trace_id'] = $exception->getTraceId();
 
-            if (!empty($exception->getContext())) {
-                $response['error']['context'] = $exception->getContext();
+            $context = $exception->getErrorContext();
+            if (!empty($context)) {
+                $response['error']['context'] = $context;
             }
 
-            if ($exception instanceof HttpException) {
-                $response['error']['http_status'] = $exception->getHttpStatusCode();
-            }
+            $response['error']['location'] = $exception->getLocation();
 
-            if (!$this->isProduction) {
-                $response['error']['file'] = $exception->getFile();
-                $response['error']['line'] = $exception->getLine();
+            if ($this->includeTrace) {
+                $response['error']['chain'] = $exception->getCallChain();
             }
         } else {
-            $response['error']['code'] = 'INTERNAL_ERROR';
+            $response['error']['code'] = 'E9999';
 
-            if (!$this->isProduction) {
-                $response['error']['file'] = $exception->getFile();
-                $response['error']['line'] = $exception->getLine();
+            if ($this->isProduction) {
+                $response['error']['message'] = '系统异常';
             }
-        }
-
-        if ($this->includeTrace && !$this->isProduction) {
-            $response['error']['trace'] = $this->sanitizeTrace($exception->getTrace());
         }
 
         return $response;
@@ -71,17 +61,5 @@ class JsonResponseFormatter implements ResponseFormatterInterface
     public function getContentType(): string
     {
         return 'application/json';
-    }
-
-    protected function sanitizeTrace(array $trace): array
-    {
-        return array_map(function ($frame) {
-            return [
-                'file' => $frame['file'] ?? null,
-                'line' => $frame['line'] ?? null,
-                'function' => $frame['function'] ?? null,
-                'class' => $frame['class'] ?? null,
-            ];
-        }, $trace);
     }
 }

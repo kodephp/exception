@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Formatter;
 
-use Kode\Exception\ExceptionInterface;
+use Kode\Exception\KodeException;
 use Throwable;
 
 /**
@@ -13,7 +13,6 @@ use Throwable;
  */
 class ArrayResponseFormatter implements ResponseFormatterInterface
 {
-    /** 是否生产模式 */
     protected bool $isProduction;
 
     public function __construct(bool $isProduction = false)
@@ -23,17 +22,18 @@ class ArrayResponseFormatter implements ResponseFormatterInterface
 
     public function format(Throwable $exception): array
     {
-        if ($exception instanceof ExceptionInterface) {
+        if ($exception instanceof KodeException) {
             return $exception->toArray();
         }
 
         return [
-            'error_code' => 'INTERNAL_ERROR',
-            'message' => $this->isProduction ? 'An internal error occurred' : $exception->getMessage(),
-            'code' => $exception->getCode(),
-            'file' => $exception->getFile(),
-            'line' => $exception->getLine(),
-            'timestamp' => (new \DateTimeImmutable())->format('Y-m-d\TH:i:s.uP'),
+            'code' => 'E9999',
+            'msg' => $this->isProduction ? '系统异常' : $exception->getMessage(),
+            'type' => 'system',
+            'location' => [
+                'file' => $exception->getFile(),
+                'line' => $exception->getLine(),
+            ],
         ];
     }
 

@@ -4,18 +4,16 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Handler;
 
-use Kode\Exception\ExceptionInterface;
-use Kode\Exception\HttpException;
+use Kode\Exception\KodeException;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
 /**
  * HTTP 异常处理器
- * 专门处理 HttpException 类型异常
+ * 专门处理 KodeException 中 type=http 的异常
  */
 class HttpExceptionHandler implements ExceptionHandlerInterface
 {
-    /** @var LoggerInterface 日志记录器 */
     protected LoggerInterface $logger;
 
     public function __construct(LoggerInterface $logger)
@@ -25,11 +23,11 @@ class HttpExceptionHandler implements ExceptionHandlerInterface
 
     public function handle(Throwable $exception): bool
     {
-        if ($exception instanceof HttpException) {
+        if ($exception instanceof KodeException && $exception->getErrorType() === KodeException::TYPE_HTTP) {
             $this->logger->warning('HTTP 异常', [
-                'status_code' => $exception->getHttpStatusCode(),
-                'message' => $exception->getMessage(),
-                'trace_id' => $exception instanceof ExceptionInterface ? $exception->getTraceId() : null,
+                'code' => $exception->getErrorCode(),
+                'msg' => $exception->getErrorMsg(),
+                'trace_id' => $exception->getTraceId(),
             ]);
             return true;
         }
