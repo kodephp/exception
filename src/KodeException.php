@@ -243,6 +243,21 @@ class KodeException extends \Exception
         };
     }
 
+    /** 判断异常是否可恢复 */
+    public function isRecoverable(): bool
+    {
+        return match ($this->errorType) {
+            self::TYPE_HTTP => true,
+            self::TYPE_BUSINESS => true,
+            self::TYPE_RUNTIME => in_array($this->errorCode, [
+                self::CODE_TIMEOUT,
+                self::CODE_POOL_EXHAUSTED,
+            ]),
+            self::TYPE_SYSTEM => false,
+            default => false,
+        };
+    }
+
     /** 获取异常位置信息 */
     public function getLocation(): array
     {

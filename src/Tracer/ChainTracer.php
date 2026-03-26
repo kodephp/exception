@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Tracer;
 
-use Kode\Exception\ExceptionInterface;
+use Kode\Exception\KodeException;
 
 /**
  * 错误链路追踪器
@@ -78,16 +78,7 @@ class ChainTracer
     /** 添加异常到链路 */
     protected function addExceptionToChain(\Throwable $exception, bool $isPrevious = false): void
     {
-        $timestamp = 'unknown';
-        if ($exception instanceof ExceptionInterface) {
-            try {
-                $timestamp = $exception->getTimestamp()->format('Y-m-d H:i:s.u');
-            } catch (\Throwable) {
-                $timestamp = date('Y-m-d H:i:s');
-            }
-        } else {
-            $timestamp = date('Y-m-d H:i:s');
-        }
+        $timestamp = date('Y-m-d H:i:s');
 
         $this->chain[] = [
             'type' => $isPrevious ? 'previous' : 'current',
@@ -210,10 +201,10 @@ class ChainTracer
     {
         $roots = [];
         if (defined('APP_ROOT')) {
-            $roots[] = APP_ROOT;
+            $roots[] = constant('APP_ROOT');
         }
         if (defined('BASE_PATH')) {
-            $roots[] = BASE_PATH;
+            $roots[] = constant('BASE_PATH');
         }
         if (isset($_SERVER['DOCUMENT_ROOT'])) {
             $roots[] = $_SERVER['DOCUMENT_ROOT'];

@@ -4,10 +4,7 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Tracer;
 
-use Kode\Exception\BusinessException;
-use Kode\Exception\ExceptionInterface;
-use Kode\Exception\HttpException;
-use Kode\Exception\RuntimeException;
+use Kode\Exception\KodeException;
 
 /**
  * 异常位置定位器
@@ -37,10 +34,10 @@ class ExceptionLocator
         $roots = [];
 
         if (defined('APP_ROOT')) {
-            $roots[] = APP_ROOT;
+            $roots[] = constant('APP_ROOT');
         }
         if (defined('SRC_ROOT')) {
-            $roots[] = SRC_ROOT;
+            $roots[] = constant('SRC_ROOT');
         }
         if (isset($_SERVER['DOCUMENT_ROOT'])) {
             $roots[] = dirname($_SERVER['DOCUMENT_ROOT']);
@@ -193,19 +190,25 @@ class ExceptionLocator
             return 'error';
         }
 
-        if ($exception instanceof HttpException) {
-            $statusCode = $exception->getHttpStatusCode();
-            if ($statusCode >= 500) {
-                return 'error';
+        if ($exception instanceof KodeException) {
+            if ($exception->isHttp()) {
+                $statusCode = $exception->getHttpStatusCode();
+                if ($statusCode >= 500) {
+                    return 'error';
+                }
+                if ($statusCode >= 400) {
+                    return 'warning';
+                }
+                return 'info';
             }
-            if ($statusCode >= 400) {
-                return 'warning';
-            }
-            return 'info';
-        }
 
-        if ($exception instanceof RuntimeException) {
-            return $exception->isRecoverable() ? 'error' : 'critical';
+            if ($exception->isRuntime()) {
+                return $exception->isRecoverable() ? 'error' : 'critical';
+            }
+
+            if ($exception->isSystem()) {
+                return 'critical';
+            }
         }
 
         return 'error';
