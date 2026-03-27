@@ -120,29 +120,7 @@ class ExceptionManager
     protected function determineStatusCode(Throwable $exception): int
     {
         if ($exception instanceof KodeException) {
-            $code = $exception->getErrorCode();
-
-            if (in_array($code, [KodeException::CODE_UNAUTHORIZED])) {
-                return 401;
-            }
-            if (in_array($code, [KodeException::CODE_FORBIDDEN])) {
-                return 403;
-            }
-            if (in_array($code, [KodeException::CODE_NOT_FOUND, KodeException::CODE_NOT_FOUND_ENTITY])) {
-                return 404;
-            }
-            if (in_array($code, [KodeException::CODE_VALIDATION_FAILED, KodeException::CODE_INVALID_PARAM])) {
-                return 422;
-            }
-            if (in_array($code, [KodeException::CODE_TOO_MANY_REQUESTS])) {
-                return 429;
-            }
-            if (in_array($code, [KodeException::CODE_INTERNAL_ERROR, KodeException::CODE_SERVER_ERROR])) {
-                return 500;
-            }
-            if (in_array($code, [KodeException::CODE_SERVICE_UNAVAILABLE])) {
-                return 503;
-            }
+            return $exception->getHttpStatusCode();
         }
 
         return 500;
@@ -152,7 +130,7 @@ class ExceptionManager
     protected function sendResponse(array $response, int $statusCode): void
     {
         if (headers_sent($file, $line)) {
-            echo json_encode($response, JSON_THROW_ON_ERROR);
+            $this->safeJsonEcho($response);
             return;
         }
 
@@ -164,7 +142,23 @@ class ExceptionManager
             header('X-Span-Id: ' . $response['span_id']);
         }
 
-        echo json_encode($response, JSON_THROW_ON_ERROR);
+        $this->safeJsonEcho($response);
+    }
+
+    /** 安全的 JSON 输出（避免 JSON_THROW_ON_ERROR 崩溃） */
+    protected function safeJsonEcho(array $data): void
+    {
+        try {
+            echo json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        } catch (\JsonException) {
+            $fallback = [
+                'code' => 'E9999',
+                'msg' => 'JSON 编码失败',
+                'type' => 'system',
+                'trace_id' => $data['trace_id'] ?? 'unknown',
+            ];
+            echo json_encode($fallback, JSON_UNESCAPED_UNICODE);
+        }
     }
 
     /** 是否生产模式 */

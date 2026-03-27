@@ -24,38 +24,49 @@ class JsonResponseFormatter implements ResponseFormatterInterface
 
     public function format(Throwable $exception): array
     {
-        $response = [
-            'success' => false,
-            'error' => [
-                'message' => $exception->getMessage(),
-            ],
-        ];
-
         if ($exception instanceof KodeException) {
-            $response['error']['code'] = $exception->getErrorCode();
-            $response['error']['msg'] = $exception->getErrorMsg();
-            $response['error']['type'] = $exception->getErrorType();
-            $response['error']['trace_id'] = $exception->getTraceId();
+            $response = [
+                'code' => $exception->getErrorCode(),
+                'msg' => $exception->getErrorMsg(),
+                'type' => $exception->getErrorType(),
+                'trace_id' => $exception->getTraceId(),
+                'location' => $exception->getLocation(),
+            ];
 
             $context = $exception->getErrorContext();
             if (!empty($context)) {
-                $response['error']['context'] = $context;
+                $response['context'] = $context;
             }
-
-            $response['error']['location'] = $exception->getLocation();
 
             if ($this->includeTrace) {
-                $response['error']['chain'] = $exception->getCallChain();
+                $response['chain'] = $exception->getCallChain();
             }
-        } else {
-            $response['error']['code'] = 'E9999';
 
-            if ($this->isProduction) {
-                $response['error']['message'] = '系统异常';
-            }
+            return $response;
         }
 
-        return $response;
+        return [
+            'code' => 'E9999',
+            'msg' => $this->isProduction ? '系统异常' : $exception->getMessage(),
+            'type' => 'system',
+            'trace_id' => $this->generateTraceId(),
+            'location' => [
+                'file' => $exception->getFile(),
+                'line' => $exception->getLine(),
+            ],
+        ];
+    }
+
+    protected function generateTraceId(): string
+    {
+        return sprintf(
+            '%08x-%04x-%04x-%04x-%012x',
+            time(),
+            mt_rand(0, 0xffff),
+            mt_rand(0, 0xffff),
+            mt_rand(0, 0x3fff) | 0x8000,
+            mt_rand(0, 0xffffffffffff)
+        );
     }
 
     public function getContentType(): string
