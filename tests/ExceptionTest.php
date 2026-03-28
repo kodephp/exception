@@ -242,11 +242,11 @@ class ExceptionTest extends TestCase
 
     public function testKodeUnifiedEntry(): void
     {
-        $manager = \Kode\Exception\Kode::init(false, null, null, 'test-service');
+        $manager = KodeException::init(false, null, null, 'test-service');
 
         $this->assertInstanceOf(\Kode\Exception\ExceptionManager::class, $manager);
-        $this->assertInstanceOf(\Kode\Exception\Tracer\DistributedTracer::class, \Kode\Exception\Kode::tracer());
-        $this->assertInstanceOf(\Psr\Log\LoggerInterface::class, \Kode\Exception\Kode::logger());
-        $this->assertSame($manager, \Kode\Exception\Kode::manager());
+        $this->assertInstanceOf(\Kode\Exception\Tracer\DistributedTracer::class, KodeException::tracer());
+        $this->assertInstanceOf(\Psr\Log\LoggerInterface::class, KodeException::logger());
+        $this->assertSame($manager, KodeException::manager());
     }
 }

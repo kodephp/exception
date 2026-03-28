@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Kode\Exception;
 
+use Kode\Exception\Formatter\ResponseFormatterInterface;
+use Kode\Exception\Tracer\DistributedTracer;
+use Psr\Log\LoggerInterface;
 use Throwable;
 
 /**
@@ -495,5 +498,99 @@ class KodeException extends \Exception
             basename($this->getFile()),
             $this->getLine()
         );
+    }
+
+    // ==================== 静态便捷方法 ====================
+
+    /** 获取异常管理器实例 */
+    public static function manager(): ExceptionManager
+    {
+        return ExceptionManager::getInstance();
+    }
+
+    /** 初始化异常处理系统 */
+    public static function init(
+        bool $isProduction = false,
+        ?LoggerInterface $logger = null,
+        ?ResponseFormatterInterface $formatter = null,
+        string $serviceName = 'kode-app'
+    ): ExceptionManager {
+        $manager = ExceptionManager::getInstance();
+
+        if ($logger !== null) {
+            $manager->setLogger($logger);
+        }
+
+        if ($formatter !== null) {
+            $manager->setFormatter($formatter);
+        }
+
+        $manager->setProduction($isProduction);
+
+        if ($manager->getTracer() === null) {
+            $manager->createTracer($serviceName);
+        }
+
+        return $manager;
+    }
+
+    /** 获取链路追踪器 */
+    public static function tracer(): ?DistributedTracer
+    {
+        return ExceptionManager::getInstance()->getTracer();
+    }
+
+    /** 获取日志记录器 */
+    public static function logger(): LoggerInterface
+    {
+        return ExceptionManager::getInstance()->getLogger();
+    }
+
+    /** 格式化异常 */
+    public static function format(Throwable $exception): array
+    {
+        return ExceptionManager::getInstance()->format($exception);
+    }
+
+    /** 渲染异常为 JSON */
+    public static function render(Throwable $exception): string
+    {
+        return ExceptionManager::getInstance()->render($exception);
+    }
+
+    /** 记录日志 */
+    public static function log(string $level, string $message, array $context = []): void
+    {
+        self::logger()->log($level, $message, $context);
+    }
+
+    /** Debug 日志 */
+    public static function debug(string $message, array $context = []): void
+    {
+        self::logger()->debug($message, $context);
+    }
+
+    /** Info 日志 */
+    public static function info(string $message, array $context = []): void
+    {
+        self::logger()->info($message, $context);
+    }
+
+    /** Warning 日志 */
+    public static function warning(string $message, array $context = []): void
+    {
+        self::logger()->warning($message, $context);
+    }
+
+    /** Error 日志 */
+    public static function errorLog(string $message, array $context = []): void
+    {
+        self::logger()->error($message, $context);
+    }
+
+    /** Critical 日志 */
+    public static function critical(string $message, array $context = []): void
+    {
+        self::logger()->critical($message, $context);
     }
 }

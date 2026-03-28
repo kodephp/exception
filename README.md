@@ -51,6 +51,39 @@ throw KodeException::memory('内存耗尽');                           // E5001
 throw KodeException::disk('磁盘空间不足');                        // E5002
 ```
 
+## 统一入口（推荐）
+
+使用 `KodeException` 统一入口进行一站式异常处理、日志记录和链路追踪：
+
+```php
+use Kode\Exception\KodeException;
+
+// 一键初始化异常处理系统
+KodeException::init(
+    isProduction: false,
+    serviceName: 'my-service'
+);
+
+// 快速抛出异常
+throw KodeException::bad('参数错误', ['field' => 'email']);
+throw KodeException::auth('未授权');
+throw KodeException::notFound('资源不存在');
+
+// 快速日志记录
+KodeException::info('服务启动');
+KodeException::warning('请求频繁');
+KodeException::errorLog('系统错误');
+
+// 访问管理器、追踪器、日志器
+$manager = KodeException::manager();
+$tracer = KodeException::tracer();
+$logger = KodeException::logger();
+
+// 格式化和渲染异常
+$response = KodeException::format($exception);
+$json = KodeException::render($exception);
+```
+
 ## 统一响应格式
 
 响应直接以 code 层开始，无需外层包装：
