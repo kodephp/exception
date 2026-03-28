@@ -187,6 +187,19 @@ class ExceptionManager
         return $this;
     }
 
+    /** 获取响应格式化器 */
+    public function getFormatter(): ResponseFormatterInterface
+    {
+        return $this->formatter;
+    }
+
+    /** 设置响应格式化器 */
+    public function setFormatter(ResponseFormatterInterface $formatter): self
+    {
+        $this->formatter = $formatter;
+        return $this;
+    }
+
     /** 获取链路追踪器 */
     public function getTracer(): ?DistributedTracer
     {

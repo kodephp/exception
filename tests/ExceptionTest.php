@@ -239,4 +239,14 @@ class ExceptionTest extends TestCase
         $this->assertStringContainsString('E1001', $summary);
         $this->assertStringContainsString('测试错误', $summary);
     }
+
+    public function testKodeUnifiedEntry(): void
+    {
+        $manager = \Kode\Exception\Kode::init(false, null, null, 'test-service');
+
+        $this->assertInstanceOf(\Kode\Exception\ExceptionManager::class, $manager);
+        $this->assertInstanceOf(\Kode\Exception\Tracer\DistributedTracer::class, \Kode\Exception\Kode::tracer());
+        $this->assertInstanceOf(\Psr\Log\LoggerInterface::class, \Kode\Exception\Kode::logger());
+        $this->assertSame($manager, \Kode\Exception\Kode::manager());
+    }
 }
