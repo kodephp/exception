@@ -12,6 +12,18 @@ kode 统一异常处理包，支持 FPM / 多进程 / 多线程 / 协程 / 分�
 - **多环境支持** - FPM、Swoole、Workerman、Fiber 协程
 - **Monolog 集成** - 完整日志支持，自动分级记录
 
+## v3.0.0 重大变更
+
+- **最低 PHP 8.3**：全面启用 8.3 特性 —— `enum` 错误码 / 错误类型、`#[\SensitiveParameter]`、typed class constants、`#[\Override]`。
+- **枚举驱动错误码**：`KodeException` 内部以 `ErrorCode` / `ErrorType` 枚举驱动；错误码数值采用 `preg_replace` 提取（修复 v2 用 `hexdec` 把 `E1001` 误算为 `4097` 的缺陷）。
+- **CSPRNG 标识生成**：trace-id（32 位十六进制）/ span-id（16 位）改用 `\Random\Randomizer` + `Secure` 引擎，取代 v2 的 `mt_rand`。
+- **W3C Trace Context**：新增 `TraceContext`（traceparent / tracestate），替代 v2 直接回写请求头，杜绝 CRLF 响应头注入。
+- **敏感数据脱敏**：`ContextSanitizer` 在输出前遮蔽 password / token / secret 等字段。
+- **处理器责任链**：`ExceptionManager::addHandler()` 按优先级降序分发，新增 `CallableExceptionHandler`；`reportable()` / `dontReport()` 扩展点生效。
+- **统一响应格式增强**：响应体新增 `span_id`，生产模式自动隐藏系统异常详情与绝对路径。
+- **RFC 9457 支持**：新增 `ProblemDetailsFormatter`（`application/problem+json`）。
+- **致命错误兜底**：`register()` 注册 `register_shutdown_function` 捕获致命错误。
+
 ## 安装
 
 ```bash
@@ -92,7 +104,8 @@ $json = KodeException::render($exception);
   "code": "E1001",
   "msg": "参数错误",
   "type": "http",
-  "trace_id": "67f3a1b2-c8d4-e925-f6a1-3b7c9e2d4f5a",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "00f067aa0ba902b7",
   "location": {
     "file": "/app/Service/UserService.php",
     "line": 42,
@@ -181,7 +194,7 @@ echo $exporter->export($report);
 
 【🖥️ 环境】
   PID: 12345
-  PHP: 8.2.0
+  PHP: 8.3.0
   SAPI: fpm
 
 ───────────────────────────────────────────────────────────────
@@ -299,7 +312,7 @@ $e->getSummary(); // [E1001] 参数错误 (UserService.php:42)
 
 ## 项目规范
 
-- PHP 版本: >=8.1
+- PHP 版本: >=8.3
 - 严格类型: `declare(strict_types=1);`
 - 命名空间: `Kode\Exception`
 - 测试框架: PHPUnit

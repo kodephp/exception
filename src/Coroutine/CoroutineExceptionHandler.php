@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Kode\Exception\Coroutine;
 
 use Error;
-use Fiber;
 use Kode\Exception\KodeException;
+use Kode\Exception\Support\Runtime;
 use Throwable;
 
 /**
@@ -38,29 +38,12 @@ class CoroutineExceptionHandler
 
     public static function getCurrentCoroutineId(): string
     {
-        if (function_exists('swooleCoroutine_getuid')) {
-            return (string) swooleCoroutine_getuid();
-        }
-
-        if (function_exists('Fiber::getCurrent')) {
-            $fiber = Fiber::getCurrent();
-            return $fiber ? (string) spl_object_id($fiber) : 'main';
-        }
-
-        return 'main';
+        return Runtime::contextKey();
     }
 
     public static function isInCoroutine(): bool
     {
-        if (function_exists('swooleCoroutine_getuid')) {
-            return swooleCoroutine_getuid() >= 0;
-        }
-
-        if (function_exists('Fiber::getCurrent')) {
-            return Fiber::getCurrent() !== null;
-        }
-
-        return false;
+        return Runtime::inCoroutine();
     }
 
     public function __invoke(Throwable $exception): void

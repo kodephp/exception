@@ -4,24 +4,28 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Formatter;
 
+use Kode\Exception\Enum\ErrorCode;
+use Kode\Exception\Enum\ErrorType;
 use Kode\Exception\KodeException;
+use Kode\Exception\Support\IdGenerator;
+use Override;
 use Throwable;
 
 /**
- * JSON 响应格式化器
- * 将异常格式化为标准 JSON 响应结构
+ * 精简 JSON 响应格式化器
+ *
+ * 与 UnifiedResponseFormatter 的差异：默认不输出调用链，适合对外网关。
  */
-class JsonResponseFormatter implements ResponseFormatterInterface
+final class JsonResponseFormatter implements ResponseFormatterInterface
 {
-    protected bool $isProduction;
-    protected bool $includeTrace;
-
-    public function __construct(bool $isProduction = false, bool $includeTrace = false)
-    {
-        $this->isProduction = $isProduction;
-        $this->includeTrace = $includeTrace;
+    public function __construct(
+        private readonly bool $isProduction = false,
+        private readonly bool $includeTrace = false,
+        private readonly string $productionMessage = '系统繁忙，请稍后重试',
+    ) {
     }
 
+    #[Override]
     public function format(Throwable $exception): array
     {
         if ($exception instanceof KodeException) {
@@ -30,15 +34,18 @@ class JsonResponseFormatter implements ResponseFormatterInterface
                 'msg' => $exception->getErrorMsg(),
                 'type' => $exception->getErrorType(),
                 'trace_id' => $exception->getTraceId(),
-                'location' => $exception->getLocation(),
             ];
 
+            if (!$this->isProduction) {
+                $response['location'] = $exception->getLocation();
+            }
+
             $context = $exception->getErrorContext();
-            if (!empty($context)) {
+            if ($context !== []) {
                 $response['context'] = $context;
             }
 
-            if ($this->includeTrace) {
+            if ($this->includeTrace && !$this->isProduction) {
                 $response['chain'] = $exception->getCallChain();
             }
 
@@ -46,31 +53,17 @@ class JsonResponseFormatter implements ResponseFormatterInterface
         }
 
         return [
-            'code' => 'E9999',
-            'msg' => $this->isProduction ? '系统异常' : $exception->getMessage(),
-            'type' => 'system',
-            'trace_id' => $this->generateTraceId(),
-            'location' => [
-                'file' => $exception->getFile(),
-                'line' => $exception->getLine(),
-            ],
+            'code' => ErrorCode::Unknown->value,
+            'msg' => $this->isProduction ? $this->productionMessage : $exception->getMessage(),
+            'type' => ErrorType::System->value,
+            'trace_id' => KodeException::traceContext()->traceId,
+            'span_id' => IdGenerator::spanId(),
         ];
     }
 
-    protected function generateTraceId(): string
-    {
-        return sprintf(
-            '%08x-%04x-%04x-%04x-%012x',
-            time(),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0x3fff) | 0x8000,
-            mt_rand(0, 0xffffffffffff)
-        );
-    }
-
+    #[Override]
     public function getContentType(): string
     {
-        return 'application/json';
+        return 'application/json; charset=utf-8';
     }
 }

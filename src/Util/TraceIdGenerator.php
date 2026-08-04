@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Util;
 
+use Kode\Exception\Support\IdGenerator;
+
 /**
  * TraceId 生成器
  * 生成唯一的追踪 ID，用于日志关联和问题定位
@@ -20,26 +22,9 @@ class TraceIdGenerator
     /** 生成 TraceId */
     public static function generate(): string
     {
-        $timestamp = microtime(true);
-        $pid = getmypid();
-
-        if ($timestamp === self::$lastTime) {
-            self::$counter++;
-        } else {
-            self::$counter = 0;
-            self::$lastTime = $timestamp;
-        }
-
         $prefix = self::$prefix ?? self::generatePrefix();
 
-        return sprintf(
-            '%s-%08x-%04x-%04x-%012x',
-            $prefix,
-            (int) $timestamp,
-            $pid & 0xFFFF,
-            (self::$counter & 0x3FFF) | 0x4000,
-            self::generateRandom()
-        );
+        return $prefix . '-' . IdGenerator::traceId();
     }
 
     /** 从异常生成 TraceId */
@@ -80,11 +65,5 @@ class TraceIdGenerator
     {
         self::$counter = 0;
         self::$lastTime = 0;
-    }
-
-    /** 生成随机数 */
-    protected static function generateRandom(): int
-    {
-        return mt_rand(0, 0xFFFFFFFFFFFF);
     }
 }

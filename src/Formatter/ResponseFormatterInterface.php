@@ -11,7 +11,13 @@ use Throwable;
  */
 interface ResponseFormatterInterface
 {
+    /**
+     * 将异常格式化为响应数组
+     *
+     * @return array<string, mixed>
+     */
     public function format(Throwable $exception): array;
 
+    /** 响应 Content-Type */
     public function getContentType(): string;
 }

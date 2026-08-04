@@ -1,12 +1,29 @@
+# 依赖与锁文件
+vendor/
+composer.lock
+
+# 测试与覆盖率缓存
 .phpunit.result.cache
 .phpunit.cache/
-vendor/
+coverage/
+.php-cs-fixer.cache
+.phpstan.cache/
+
+# 日志
 *.log
+logs/
+
+# 本地工具与助手（不入库）
+.workbuddy/
+.trae/
 .idea/
 .vscode/
 *.swp
 *.swo
+
+# 本地变更日志（不入库）
+CHANGELOG.md
+
+# 系统文件
 .DS_Store
 Thumbs.db
-.trae/
-composer.lock

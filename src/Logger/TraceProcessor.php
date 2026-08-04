@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Logger;
 
+use Monolog\LogRecord;
 use Throwable;
 
 /**
@@ -19,12 +20,18 @@ class TraceProcessor
         'Psr\\Log\\',
     ];
 
-    public function __invoke(array $record): array
+    public function __invoke(LogRecord|array $record): LogRecord|array
     {
-        if (isset($record['context']['exception']) && $record['context']['exception'] instanceof Throwable) {
-            $record['context']['exception_data'] = $this->processException(
-                $record['context']['exception']
-            );
+        $context = $record instanceof LogRecord ? $record->context : $record['context'];
+
+        if (isset($context['exception']) && $context['exception'] instanceof Throwable) {
+            $exceptionData = $this->processException($context['exception']);
+
+            if ($record instanceof LogRecord) {
+                $record = $record->with(context: array_merge($record->context, ['exception_data' => $exceptionData]));
+            } else {
+                $record['context']['exception_data'] = $exceptionData;
+            }
         }
 
         return $record;

@@ -4,9 +4,14 @@ declare(strict_types=1);
 
 namespace Kode\Exception;
 
+use ErrorException;
+use JsonException;
+use Kode\Exception\Enum\ErrorCode;
 use Kode\Exception\Formatter\ResponseFormatterInterface;
 use Kode\Exception\Formatter\UnifiedResponseFormatter;
 use Kode\Exception\Handler\ExceptionHandlerInterface;
+use Kode\Exception\Support\Runtime;
+use Kode\Exception\Support\TraceContext;
 use Kode\Exception\Tracer\DistributedTracer;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -14,24 +19,39 @@ use Throwable;
 
 /**
  * 异常管理器
- * 全局异常处理、响应格式化、日志记录
+ *
+ * 负责全局异常接管、处理器责任链分发、响应格式化与日志记录。
+ *
+ * v3 主要变化：
+ *  - handlers 责任链真正生效（v2 该属性从未被使用）
+ *  - 新增 reportable / renderable 回调扩展点
+ *  - 新增 register_shutdown_function 致命错误兜底
+ *  - 响应头值统一过滤，杜绝 CRLF 注入
  */
 class ExceptionManager
 {
-    /** 日志记录器 */
+    /** 致命错误级别掩码 */
+    public const int FATAL_ERROR_MASK = E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR;
+
     protected LoggerInterface $logger;
-    /** 响应格式化器 */
     protected ResponseFormatterInterface $formatter;
-    /** 异常处理器列表 */
+
+    /** @var list<ExceptionHandlerInterface> 按优先级降序 */
     protected array $handlers = [];
-    /** 是否生产模式 */
+    /** @var list<callable(Throwable):mixed> */
+    protected array $reportCallbacks = [];
+    /** @var list<callable(Throwable):(array|null)> */
+    protected array $renderCallbacks = [];
+    /** @var list<class-string<Throwable>> 不记录日志的异常类型 */
+    protected array $dontReport = [];
+
     protected bool $isProduction;
-    /** 是否已注册全局处理器 */
     protected bool $isRegistered = false;
-    /** 单例实例 */
-    protected static ?ExceptionManager $instance = null;
-    /** 链路追踪器 */
+    protected bool $shutdownRegistered = false;
+    protected bool $sendHeaders = true;
     protected ?DistributedTracer $tracer = null;
+
+    protected static ?self $instance = null;
 
     public function __construct(
         ?LoggerInterface $logger = null,
@@ -41,182 +61,422 @@ class ExceptionManager
         $this->logger = $logger ?? new NullLogger();
         $this->formatter = $formatter ?? new UnifiedResponseFormatter($isProduction);
         $this->isProduction = $isProduction;
+
+        KodeException::captureArgs(!$isProduction);
     }
 
-    /** 获取单例实例 */
-    public static function getInstance(): self
+    public static function getInstance(): static
     {
-        if (self::$instance === null) {
-            self::$instance = new self();
-        }
-        return self::$instance;
+        return self::$instance ??= new static();
     }
 
-    /** 设置单例实例 */
-    public static function setInstance(self $instance): void
+    public static function setInstance(?self $instance): void
     {
         self::$instance = $instance;
     }
 
-    /** 注册全局异常处理器 */
-    public function register(): self
+    /** 重置单例（测试或 Worker 重启时使用） */
+    public static function reset(): void
+    {
+        self::$instance = null;
+    }
+
+    // ==================== 全局接管 ====================
+
+    /** 注册全局异常 / 错误 / 致命错误处理器 */
+    public function register(bool $withShutdown = true): static
     {
         if ($this->isRegistered) {
             return $this;
         }
 
-        set_exception_handler([$this, 'handleException']);
-        set_error_handler([$this, 'handleError']);
+        set_exception_handler($this->handleException(...));
+        set_error_handler($this->handleError(...));
+
+        if ($withShutdown && !$this->shutdownRegistered) {
+            register_shutdown_function($this->handleShutdown(...));
+            $this->shutdownRegistered = true;
+        }
 
         $this->isRegistered = true;
+
         return $this;
     }
 
-    /** 取消注册全局异常处理器 */
-    public function unregister(): void
+    public function unregister(): static
     {
+        if (!$this->isRegistered) {
+            return $this;
+        }
+
         restore_error_handler();
         restore_exception_handler();
         $this->isRegistered = false;
+
+        return $this;
     }
 
-    /** 处理异常 */
+    public function isRegistered(): bool
+    {
+        return $this->isRegistered;
+    }
+
+    /**
+     * 常驻进程每请求开始时调用：重置链路上下文并按需继承上游 traceparent。
+     */
+    public function startRequest(?array $server = null): TraceContext
+    {
+        $context = TraceContext::fromServer($server) ?? TraceContext::start();
+        KodeException::setTraceContext($context);
+
+        return $context;
+    }
+
+    // ==================== 处理器责任链 ====================
+
+    /** 注册异常处理器，按优先级降序执行 */
+    public function addHandler(ExceptionHandlerInterface $handler): static
+    {
+        $this->handlers[] = $handler;
+        usort(
+            $this->handlers,
+            static fn (ExceptionHandlerInterface $a, ExceptionHandlerInterface $b): int
+                => $b->getPriority() <=> $a->getPriority()
+        );
+
+        return $this;
+    }
+
+    /** @param iterable<ExceptionHandlerInterface> $handlers */
+    public function addHandlers(iterable $handlers): static
+    {
+        foreach ($handlers as $handler) {
+            $this->addHandler($handler);
+        }
+
+        return $this;
+    }
+
+    /** @return list<ExceptionHandlerInterface> */
+    public function getHandlers(): array
+    {
+        return $this->handlers;
+    }
+
+    public function clearHandlers(): static
+    {
+        $this->handlers = [];
+
+        return $this;
+    }
+
+    /** 沿责任链分发异常，返回是否已被处理 */
+    public function dispatch(Throwable $exception): bool
+    {
+        foreach ($this->handlers as $handler) {
+            try {
+                if ($handler->handle($exception)) {
+                    return true;
+                }
+            } catch (Throwable $handlerError) {
+                $this->logger->error('异常处理器自身抛出异常', [
+                    'handler' => $handler::class,
+                    'error' => $handlerError->getMessage(),
+                ]);
+            }
+        }
+
+        return false;
+    }
+
+    // ==================== 扩展回调 ====================
+
+    /** 注册上报回调；回调返回 false 可阻止默认日志记录 */
+    public function reportable(callable $callback): static
+    {
+        $this->reportCallbacks[] = $callback;
+
+        return $this;
+    }
+
+    /** 注册渲染回调；回调返回数组即作为最终响应体 */
+    public function renderable(callable $callback): static
+    {
+        $this->renderCallbacks[] = $callback;
+
+        return $this;
+    }
+
+    /** 忽略指定异常类型的日志上报 @param class-string<Throwable> ...$classes */
+    public function dontReport(string ...$classes): static
+    {
+        foreach ($classes as $class) {
+            if (!in_array($class, $this->dontReport, true)) {
+                $this->dontReport[] = $class;
+            }
+        }
+
+        return $this;
+    }
+
+    public function shouldReport(Throwable $exception): bool
+    {
+        foreach ($this->dontReport as $class) {
+            if ($exception instanceof $class) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // ==================== 处理入口 ====================
+
     public function handleException(Throwable $exception): void
     {
-        $this->logger->error('Exception: ' . $exception->getMessage(), [
-            'exception' => $exception,
-            'trace_id' => method_exists($exception, 'getTraceId') ? $exception->getTraceId() : null,
-        ]);
+        $this->report($exception);
 
-        $response = $this->formatter->format($exception);
-        $statusCode = $this->determineStatusCode($exception);
-
-        $this->sendResponse($response, $statusCode);
+        $response = $this->format($exception);
+        $this->sendResponse($response, $this->determineStatusCode($exception));
     }
 
-    /** 处理错误（将错误转换为异常） */
-    public function handleError(int $severity, string $message, string $file, int $line): bool
+    /** 仅上报不输出，适用于捕获后继续执行的场景 */
+    public function report(Throwable $exception): void
     {
-        if (!(error_reporting() & $severity)) {
-            return false;
+        foreach ($this->reportCallbacks as $callback) {
+            if ($callback($exception) === false) {
+                return;
+            }
         }
 
-        throw new \ErrorException($message, 0, $severity, $file, $line);
-    }
-
-    /** 格式化异常为数组 */
-    public function format(Throwable $exception): array
-    {
-        return $this->formatter->format($exception);
-    }
-
-    /** 渲染异常为 JSON 字符串 */
-    public function render(Throwable $exception): string
-    {
-        return json_encode($this->format($exception), JSON_THROW_ON_ERROR);
-    }
-
-    /** 根据异常类型确定 HTTP 状态码 */
-    protected function determineStatusCode(Throwable $exception): int
-    {
-        if ($exception instanceof KodeException) {
-            return $exception->getHttpStatusCode();
-        }
-
-        return 500;
-    }
-
-    /** 发送响应 */
-    protected function sendResponse(array $response, int $statusCode): void
-    {
-        if (headers_sent($file, $line)) {
-            $this->safeJsonEcho($response);
+        if (!$this->shouldReport($exception)) {
             return;
         }
 
-        http_response_code($statusCode);
-        header('Content-Type: ' . $this->formatter->getContentType());
-        header('X-Trace-Id: ' . ($response['trace_id'] ?? 'unknown'));
-
-        if (isset($response['span_id'])) {
-            header('X-Span-Id: ' . $response['span_id']);
+        if ($this->dispatch($exception)) {
+            return;
         }
 
-        $this->safeJsonEcho($response);
+        $this->logger->log(
+            $exception instanceof KodeException ? $exception->getLogLevel() : 'error',
+            $exception->getMessage(),
+            $this->buildLogContext($exception)
+        );
     }
 
-    /** 安全的 JSON 输出（避免 JSON_THROW_ON_ERROR 崩溃） */
-    protected function safeJsonEcho(array $data): void
+    /** PHP 错误转异常；返回 false 交回 PHP 默认处理 */
+    public function handleError(int $severity, string $message, string $file = '', int $line = 0): bool
+    {
+        if ((error_reporting() & $severity) === 0) {
+            return false;
+        }
+
+        throw new ErrorException($message, 0, $severity, $file, $line);
+    }
+
+    /** 脚本结束时兜底捕获致命错误（v2 缺失） */
+    public function handleShutdown(): void
+    {
+        $error = error_get_last();
+
+        if ($error === null || ($error['type'] & self::FATAL_ERROR_MASK) === 0) {
+            return;
+        }
+
+        $exception = new KodeException(
+            ErrorCode::FatalError,
+            $error['message'],
+            null,
+            null,
+            [
+                'file' => $error['file'],
+                'line' => $error['line'],
+                'severity' => $error['type'],
+                'runtime' => Runtime::name(),
+            ]
+        );
+
+        $this->report($exception);
+
+        if (!$this->isProduction) {
+            $this->sendResponse($this->format($exception), 500);
+        }
+    }
+
+    // ==================== 格式化与输出 ====================
+
+    public function format(Throwable $exception): array
+    {
+        foreach ($this->renderCallbacks as $callback) {
+            $rendered = $callback($exception);
+            if (is_array($rendered)) {
+                return $rendered;
+            }
+        }
+
+        return $this->formatter->format($exception);
+    }
+
+    public function render(Throwable $exception): string
+    {
+        return $this->encode($this->format($exception));
+    }
+
+    protected function determineStatusCode(Throwable $exception): int
+    {
+        return $exception instanceof KodeException ? $exception->getHttpStatusCode() : 500;
+    }
+
+    protected function buildLogContext(Throwable $exception): array
+    {
+        $context = [
+            'exception_class' => $exception::class,
+            'file' => $exception->getFile(),
+            'line' => $exception->getLine(),
+            'runtime' => Runtime::name(),
+        ];
+
+        if ($exception instanceof KodeException) {
+            $context['code'] = $exception->getErrorCode();
+            $context['type'] = $exception->getErrorType();
+            $context['trace_id'] = $exception->getTraceId();
+            $context['span_id'] = $exception->getSpanId();
+            $context['context'] = $exception->getErrorContext();
+        }
+
+        return $context;
+    }
+
+    protected function sendResponse(array $response, int $statusCode): void
+    {
+        if ($this->sendHeaders && !headers_sent()) {
+            http_response_code($statusCode);
+            header('Content-Type: ' . $this->formatter->getContentType());
+
+            foreach ($this->buildTraceHeaders($response) as $name => $value) {
+                header($name . ': ' . $value);
+            }
+        }
+
+        echo $this->encode($response);
+    }
+
+    /**
+     * 构建链路响应头。
+     * 所有值均经过白名单过滤，避免把请求侧可控内容原样回写造成响应头注入。
+     *
+     * @return array<string, string>
+     */
+    protected function buildTraceHeaders(array $response): array
+    {
+        $headers = [];
+
+        $traceId = $this->safeHeaderValue((string) ($response['trace_id'] ?? ''));
+        if ($traceId !== '') {
+            $headers['X-Trace-Id'] = $traceId;
+        }
+
+        $spanId = $this->safeHeaderValue((string) ($response['span_id'] ?? ''));
+        if ($spanId !== '') {
+            $headers['X-Span-Id'] = $spanId;
+        }
+
+        return $headers;
+    }
+
+    /** 仅保留可见 ASCII，剔除控制字符（含 CR/LF）与 DEL，长度上限 200 */
+    protected function safeHeaderValue(string $value): string
+    {
+        $clean = preg_replace('/[\x00-\x1F\x7F]/', '', $value) ?? '';
+
+        return substr($clean, 0, 200);
+    }
+
+    /** 安全 JSON 编码，失败时降级为最小可用响应 */
+    protected function encode(array $data): string
     {
         try {
-            echo json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-        } catch (\JsonException) {
-            $fallback = [
-                'code' => 'E9999',
-                'msg' => 'JSON 编码失败',
+            return json_encode(
+                $data,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
+            );
+        } catch (JsonException $e) {
+            $fallback = json_encode([
+                'code' => ErrorCode::Unknown->value,
+                'msg' => 'JSON 编码失败: ' . $e->getMessage(),
                 'type' => 'system',
-                'trace_id' => $data['trace_id'] ?? 'unknown',
-            ];
-            echo json_encode($fallback, JSON_UNESCAPED_UNICODE);
+                'trace_id' => $this->safeHeaderValue((string) ($data['trace_id'] ?? 'unknown')),
+            ], JSON_UNESCAPED_UNICODE);
+
+            return $fallback !== false ? $fallback : '{"code":"E9999","msg":"encode failed","type":"system"}';
         }
     }
 
-    /** 是否生产模式 */
+    // ==================== 配置访问器 ====================
+
     public function isProduction(): bool
     {
         return $this->isProduction;
     }
 
-    /** 设置生产模式 */
-    public function setProduction(bool $isProduction): self
+    public function setProduction(bool $isProduction): static
     {
         $this->isProduction = $isProduction;
+        KodeException::captureArgs(!$isProduction);
+
+        if ($this->formatter instanceof UnifiedResponseFormatter) {
+            $this->formatter = new UnifiedResponseFormatter($isProduction);
+        }
+
         return $this;
     }
 
-    /** 获取日志记录器 */
+    /** 关闭 header() 输出，便于测试或在 Swoole/Workerman 中自行接管响应 */
+    public function setSendHeaders(bool $sendHeaders): static
+    {
+        $this->sendHeaders = $sendHeaders;
+
+        return $this;
+    }
+
     public function getLogger(): LoggerInterface
     {
         return $this->logger;
     }
 
-    /** 设置日志记录器 */
-    public function setLogger(LoggerInterface $logger): self
+    public function setLogger(LoggerInterface $logger): static
     {
         $this->logger = $logger;
+
         return $this;
     }
 
-    /** 获取响应格式化器 */
     public function getFormatter(): ResponseFormatterInterface
     {
         return $this->formatter;
     }
 
-    /** 设置响应格式化器 */
-    public function setFormatter(ResponseFormatterInterface $formatter): self
+    public function setFormatter(ResponseFormatterInterface $formatter): static
     {
         $this->formatter = $formatter;
+
         return $this;
     }
 
-    /** 获取链路追踪器 */
     public function getTracer(): ?DistributedTracer
     {
         return $this->tracer;
     }
 
-    /** 设置链路追踪器 */
-    public function setTracer(DistributedTracer $tracer): self
+    public function setTracer(DistributedTracer $tracer): static
     {
         $this->tracer = $tracer;
+
         return $this;
     }
 
-    /** 创建链路追踪器 */
     public function createTracer(string $serviceName = 'kode-app'): DistributedTracer
     {
-        $this->tracer = new DistributedTracer($serviceName);
-        return $this->tracer;
+        return $this->tracer = new DistributedTracer($serviceName);
     }
 }

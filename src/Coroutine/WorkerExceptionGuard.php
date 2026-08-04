@@ -6,6 +6,7 @@ namespace Kode\Exception\Coroutine;
 
 use Kode\Exception\ExceptionManager;
 use Kode\Exception\KodeException;
+use Kode\Exception\Support\Runtime;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
@@ -35,12 +36,7 @@ class WorkerExceptionGuard
 
     protected function detectWorkerEnvironment(): bool
     {
-        return (
-            function_exists('swoole_server_getswmaster') ||
-            function_exists('workerman_getpid') ||
-            getmypid() !== (int)getenv('PPID') ||
-            isset($_SERVER['WORKER_MODE'])
-        );
+        return Runtime::isWorker();
     }
 
     public function guard(callable $callback): mixed

@@ -26,7 +26,7 @@ class MonologExceptionLogger
 
     public static function create(Logger $monolog, string $channel = 'exception'): self
     {
-        return new self($monolog->channel($channel), $channel);
+        return new self($monolog->withName($channel), $channel);
     }
 
     public function log(Throwable $exception, array $context = []): void

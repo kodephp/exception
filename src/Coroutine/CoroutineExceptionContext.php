@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Coroutine;
 
+use Kode\Exception\Support\IdGenerator;
 use Throwable;
 
 /**
@@ -87,8 +88,8 @@ class CoroutineExceptionContext
         ];
     }
 
-    protected static function generateCoroutineId(): int
+    protected static function generateCoroutineId(): string
     {
-        return mt_rand(1, PHP_INT_MAX);
+        return IdGenerator::spanId();
     }
 }

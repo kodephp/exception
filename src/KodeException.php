@@ -4,124 +4,231 @@ declare(strict_types=1);
 
 namespace Kode\Exception;
 
+use Exception;
+use JsonSerializable;
+use Kode\Exception\Enum\ErrorCode;
+use Kode\Exception\Enum\ErrorType;
 use Kode\Exception\Formatter\ResponseFormatterInterface;
+use Kode\Exception\Support\ContextSanitizer;
+use Kode\Exception\Support\IdGenerator;
+use Kode\Exception\Support\TraceContext;
 use Kode\Exception\Tracer\DistributedTracer;
 use Psr\Log\LoggerInterface;
+use Stringable;
 use Throwable;
 
 /**
  * 统一异常类
- * 支持 HTTP、业务、运行时等所有异常类型，统一 error_code 错误码体系
+ *
+ * 单一入口覆盖 HTTP / 业务 / 运行时 / 系统四类异常，统一错误码体系与链路追踪。
+ * v3 起内部以 {@see ErrorCode} / {@see ErrorType} 枚举驱动，字符串常量保留向后兼容。
  */
-class KodeException extends \Exception
+class KodeException extends Exception implements JsonSerializable, Stringable
 {
-    /** 错误类型枚举 */
-    public const TYPE_HTTP = 'http';
-    public const TYPE_BUSINESS = 'business';
-    public const TYPE_RUNTIME = 'runtime';
-    public const TYPE_SYSTEM = 'system';
+    // ==================== 错误类型（字符串常量，向后兼容） ====================
 
-    /** HTTP 错误码 (E1xxx) */
-    public const CODE_BAD_REQUEST       = 'E1001';
-    public const CODE_UNAUTHORIZED      = 'E1002';
-    public const CODE_FORBIDDEN         = 'E1003';
-    public const CODE_NOT_FOUND         = 'E1004';
-    public const CODE_METHOD_NOT_ALLOWED = 'E1005';
-    public const CODE_VALIDATION_FAILED  = 'E1006';
-    public const CODE_TOO_MANY_REQUESTS  = 'E1007';
-    public const CODE_INTERNAL_ERROR     = 'E1500';
-    public const CODE_SERVER_ERROR       = 'E1501';
-    public const CODE_SERVICE_UNAVAILABLE = 'E1503';
+    public const string TYPE_HTTP = 'http';
+    public const string TYPE_BUSINESS = 'business';
+    public const string TYPE_RUNTIME = 'runtime';
+    public const string TYPE_SYSTEM = 'system';
 
-    /** 业务错误码 (E2xxx) */
-    public const CODE_INVALID_PARAM     = 'E2001';
-    public const CODE_NOT_FOUND_ENTITY  = 'E2004';
-    public const CODE_CONFLICT         = 'E2009';
-    public const CODE_DEPRECATED       = 'E2010';
+    // ==================== HTTP 错误码 E1xxx ====================
 
-    /** 运行时错误码 (E3xxx) */
-    public const CODE_COROUTINE_PANIC   = 'E3001';
-    public const CODE_WORKER_CRASH       = 'E3002';
-    public const CODE_POOL_EXHAUSTED    = 'E3003';
-    public const CODE_TIMEOUT            = 'E3004';
-    public const CODE_DEADLOCK           = 'E3005';
+    public const string CODE_BAD_REQUEST = 'E1001';
+    public const string CODE_UNAUTHORIZED = 'E1002';
+    public const string CODE_FORBIDDEN = 'E1003';
+    public const string CODE_NOT_FOUND = 'E1004';
+    public const string CODE_METHOD_NOT_ALLOWED = 'E1005';
+    public const string CODE_VALIDATION_FAILED = 'E1006';
+    public const string CODE_TOO_MANY_REQUESTS = 'E1007';
+    public const string CODE_UNSUPPORTED_MEDIA_TYPE = 'E1008';
+    public const string CODE_REQUEST_TIMEOUT = 'E1009';
+    public const string CODE_INTERNAL_ERROR = 'E1500';
+    public const string CODE_SERVER_ERROR = 'E1501';
+    public const string CODE_BAD_GATEWAY = 'E1502';
+    public const string CODE_SERVICE_UNAVAILABLE = 'E1503';
+    public const string CODE_GATEWAY_TIMEOUT = 'E1504';
 
-    /** 系统错误码 (E5xxx) */
-    public const CODE_MEMORY_EXHAUSTED  = 'E5001';
-    public const CODE_DISK_FULL          = 'E5002';
+    // ==================== 业务错误码 E2xxx ====================
 
-    /** @var string 错误类型 */
-    protected string $errorType = self::TYPE_BUSINESS;
-    /** @var string 错误码 */
+    public const string CODE_INVALID_PARAM = 'E2001';
+    public const string CODE_NOT_FOUND_ENTITY = 'E2004';
+    public const string CODE_CONFLICT = 'E2009';
+    public const string CODE_DEPRECATED = 'E2010';
+    public const string CODE_QUOTA_EXCEEDED = 'E2011';
+    public const string CODE_STATE_INVALID = 'E2012';
+
+    // ==================== 运行时错误码 E3xxx ====================
+
+    public const string CODE_COROUTINE_PANIC = 'E3001';
+    public const string CODE_WORKER_CRASH = 'E3002';
+    public const string CODE_POOL_EXHAUSTED = 'E3003';
+    public const string CODE_TIMEOUT = 'E3004';
+    public const string CODE_DEADLOCK = 'E3005';
+    public const string CODE_CIRCUIT_OPEN = 'E3006';
+    public const string CODE_DEPENDENCY_FAILURE = 'E3007';
+
+    // ==================== 系统错误码 E5xxx ====================
+
+    public const string CODE_MEMORY_EXHAUSTED = 'E5001';
+    public const string CODE_DISK_FULL = 'E5002';
+    public const string CODE_FATAL_ERROR = 'E5003';
+    public const string CODE_CONFIG_INVALID = 'E5004';
+
+    /** 未知错误码 */
+    public const string CODE_UNKNOWN = 'E9999';
+
+    /** 调用链最大深度 */
+    public const int MAX_CHAIN_DEPTH = 15;
+
+    /** 错误码字面量 */
     protected string $errorCode;
-    /** @var string 中文错误消息 */
+    /** 错误码枚举，自定义码为 null */
+    protected ?ErrorCode $errorCodeEnum;
+    /** 错误消息 */
     protected string $errorMsg;
-    /** @var array 错误上下文 */
-    protected array $errorContext = [];
-    /** @var string 追踪ID */
-    protected string $traceId = '';
-    /** @var array 调用链路 */
+    /** 错误类型 */
+    protected ErrorType $type;
+    /** 错误上下文（已脱敏） */
+    protected array $errorContext;
+    /** 链路 ID */
+    protected string $traceId;
+    /** Span ID */
+    protected string $spanId;
+    /** 调用链路 */
     protected array $callChain = [];
+    /** 发生时间（微秒时间戳） */
+    protected float $occurredAt;
+    /** HTTP 状态码覆盖 */
+    protected ?int $httpStatusOverride = null;
+    /** 可恢复标记覆盖 */
+    protected ?bool $recoverableOverride = null;
 
+    /** 全局链路上下文 */
+    private static ?TraceContext $traceContext = null;
+    /** 全局脱敏器 */
+    private static ?ContextSanitizer $sanitizer = null;
+    /** 是否采集堆栈实参 */
+    private static bool $captureArgs = true;
+
+    /**
+     * @param ErrorCode|string      $errorCode 错误码，支持枚举或 E+4 位数字字面量
+     * @param string|null           $errorMsg  错误消息，传 null 时取枚举默认文案
+     * @param Throwable|null        $previous  上游异常
+     * @param ErrorType|string|null $errorType 错误类型，传 null 时由错误码推导
+     * @param array                 $context   错误上下文，输出前自动脱敏
+     */
     public function __construct(
-        string $errorCode,
-        string $errorMsg,
+        ErrorCode|string $errorCode,
+        ?string $errorMsg = null,
         ?Throwable $previous = null,
-        string $errorType = self::TYPE_BUSINESS,
-        array $context = []
+        ErrorType|string|null $errorType = null,
+        #[\SensitiveParameter] array $context = []
     ) {
-        $this->errorCode = $errorCode;
-        $this->errorMsg = $errorMsg;
-        $this->errorType = $errorType;
-        $this->errorContext = $context;
-        $this->traceId = $this->generateTraceId();
+        $enum = ErrorCode::parse($errorCode);
 
-        $code = hexdec(substr($errorCode, 1)) ?: 0;
-        parent::__construct($errorMsg, $code, $previous);
+        $this->errorCodeEnum = $enum;
+        $this->errorCode = $enum?->value ?? (is_string($errorCode) ? strtoupper($errorCode) : self::CODE_UNKNOWN);
+        $this->errorMsg = $errorMsg ?? $enum?->message() ?? '未知错误';
+        $this->type = $errorType !== null
+            ? ErrorType::coerce($errorType)
+            : ($enum?->type() ?? ErrorType::System);
+        $this->errorContext = self::sanitizer()->sanitize($context);
+        $this->occurredAt = microtime(true);
 
-        $this->loadCallChain($previous);
-    }
+        $trace = self::traceContext();
+        $this->traceId = $trace->traceId;
+        $this->spanId = IdGenerator::spanId();
 
-    /** 加载调用链路 */
-    protected function loadCallChain(?Throwable $previous): void
-    {
+        parent::__construct($this->errorMsg, ErrorCode::toNumeric($this->errorCode), $previous);
+
         $this->callChain = $this->buildCallChain($this->getTrace(), $previous);
     }
 
-    /** 构建调用链路 */
+    // ==================== 全局链路上下文 ====================
+
+    /** 获取当前链路上下文，首次访问时从请求头恢复或新建 */
+    public static function traceContext(): TraceContext
+    {
+        return self::$traceContext ??= (TraceContext::fromServer() ?? TraceContext::start());
+    }
+
+    /** 指定链路上下文（常用于协程 / Worker 每请求初始化） */
+    public static function setTraceContext(?TraceContext $context): void
+    {
+        self::$traceContext = $context;
+    }
+
+    /** 重置链路上下文，常驻进程每请求开始时调用 */
+    public static function resetTraceContext(): TraceContext
+    {
+        self::$traceContext = null;
+
+        return self::traceContext();
+    }
+
+    /** 获取全局脱敏器 */
+    public static function sanitizer(): ContextSanitizer
+    {
+        return self::$sanitizer ??= new ContextSanitizer();
+    }
+
+    /** 替换全局脱敏器 */
+    public static function setSanitizer(ContextSanitizer $sanitizer): void
+    {
+        self::$sanitizer = $sanitizer;
+    }
+
+    /** 是否采集堆栈实参（生产环境建议关闭） */
+    public static function captureArgs(bool $enabled): void
+    {
+        self::$captureArgs = $enabled;
+    }
+
+    public static function isCapturingArgs(): bool
+    {
+        return self::$captureArgs;
+    }
+
+    // ==================== 链路构建 ====================
+
     protected function buildCallChain(array $trace, ?Throwable $previous): array
     {
         $chain = [];
         $skipPrefixes = ['Kode\\Exception\\', 'Monolog\\', 'Psr\\Log\\'];
 
         foreach ($trace as $index => $frame) {
-            if ($index >= 15) break;
-
-            if (isset($frame['class'])) {
-                $skip = false;
-                foreach ($skipPrefixes as $prefix) {
-                    if (str_starts_with($frame['class'], $prefix)) {
-                        $skip = true;
-                        break;
-                    }
-                }
-                if ($skip) continue;
+            if ($index >= self::MAX_CHAIN_DEPTH) {
+                break;
             }
 
-            $chain[] = [
+            if (isset($frame['class'])) {
+                foreach ($skipPrefixes as $prefix) {
+                    if (str_starts_with((string) $frame['class'], $prefix)) {
+                        continue 2; // 跳过框架自身帧，继续外层 trace 循环
+                    }
+                }
+            }
+
+            $node = [
                 'file' => $frame['file'] ?? 'unknown',
                 'line' => $frame['line'] ?? 0,
                 'method' => $this->formatMethod($frame),
-                'args' => $this->formatArgs($frame['args'] ?? []),
             ];
+
+            if (self::$captureArgs) {
+                $node['args'] = $this->formatArgs($frame['args'] ?? []);
+            }
+
+            $chain[] = $node;
         }
 
         if ($previous !== null) {
             $chain[] = [
                 'file' => $previous->getFile(),
                 'line' => $previous->getLine(),
-                'method' => get_class($previous) . '::__construct',
-                'msg' => $previous->getMessage(),
+                'method' => $previous::class . '::__construct',
+                'msg' => self::sanitizer()->sanitizeValue($previous->getMessage()),
                 'is_previous' => true,
             ];
         }
@@ -129,50 +236,42 @@ class KodeException extends \Exception
         return $chain;
     }
 
-    /** 格式化方法名 */
     protected function formatMethod(array $frame): string
     {
         $method = '';
         if (isset($frame['class'])) {
             $method .= $frame['class'] . ($frame['type'] ?? '::');
         }
-        $method .= ($frame['function'] ?? 'unknown') . '()';
-        return $method;
+
+        return $method . ($frame['function'] ?? 'unknown') . '()';
     }
 
-    /** 格式化参数 */
     protected function formatArgs(array $args): array
     {
-        return array_map(function ($arg) {
-            if (is_object($arg)) {
-                return get_class($arg) . '#' . spl_object_id($arg);
-            }
-            if (is_array($arg)) {
-                return 'array[' . count($arg) . ']';
-            }
-            if (is_string($arg) && strlen($arg) > 30) {
-                return substr($arg, 0, 27) . '...';
-            }
-            return var_export($arg, true);
-        }, array_slice($args, 0, 3));
-    }
+        $sanitizer = self::sanitizer();
 
-    /** 生成 TraceId */
-    protected function generateTraceId(): string
-    {
-        return sprintf(
-            '%08x-%04x-%04x-%04x-%012x',
-            time(),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0x3fff) | 0x8000,
-            mt_rand(0, 0xffffffffffff)
+        return array_map(
+            static fn (mixed $arg): mixed => match (true) {
+                is_object($arg) => $arg::class . '#' . spl_object_id($arg),
+                is_array($arg) => 'array[' . count($arg) . ']',
+                is_string($arg) => strlen($arg) > 30 ? substr($arg, 0, 27) . '...' : $arg,
+                default => $sanitizer->sanitizeValue($arg),
+            },
+            array_slice($args, 0, 3)
         );
     }
+
+    // ==================== 访问器 ====================
 
     public function getErrorCode(): string
     {
         return $this->errorCode;
+    }
+
+    /** 错误码枚举，自定义错误码返回 null */
+    public function getErrorCodeEnum(): ?ErrorCode
+    {
+        return $this->errorCodeEnum;
     }
 
     public function getErrorMsg(): string
@@ -182,10 +281,20 @@ class KodeException extends \Exception
 
     public function getErrorType(): string
     {
-        return $this->errorType;
+        return $this->type->value;
+    }
+
+    public function getType(): ErrorType
+    {
+        return $this->type;
     }
 
     public function getErrorContext(): array
+    {
+        return $this->errorContext;
+    }
+
+    public function getContext(): array
     {
         return $this->errorContext;
     }
@@ -195,73 +304,88 @@ class KodeException extends \Exception
         return $this->traceId;
     }
 
+    public function getSpanId(): string
+    {
+        return $this->spanId;
+    }
+
     public function getCallChain(): array
     {
         return $this->callChain;
     }
 
-    public function getContext(): array
+    public function getOccurredAt(): float
     {
-        return $this->errorContext;
+        return $this->occurredAt;
     }
 
-    /** 判断是否为 HTTP 类型异常 */
+    /** 建议的 PSR-3 日志级别 */
+    public function getLogLevel(): string
+    {
+        return $this->type->logLevel();
+    }
+
     public function isHttp(): bool
     {
-        return $this->errorType === self::TYPE_HTTP;
+        return $this->type === ErrorType::Http;
     }
 
-    /** 判断是否为业务类型异常 */
     public function isBusiness(): bool
     {
-        return $this->errorType === self::TYPE_BUSINESS;
+        return $this->type === ErrorType::Business;
     }
 
-    /** 判断是否为运行时异常 */
     public function isRuntime(): bool
     {
-        return $this->errorType === self::TYPE_RUNTIME;
+        return $this->type === ErrorType::Runtime;
     }
 
-    /** 判断是否为系统异常 */
     public function isSystem(): bool
     {
-        return $this->errorType === self::TYPE_SYSTEM;
+        return $this->type === ErrorType::System;
     }
 
-    /** 获取 HTTP 状态码 */
+    public function isCode(ErrorCode|string $code): bool
+    {
+        return $this->errorCode === ($code instanceof ErrorCode ? $code->value : strtoupper($code));
+    }
+
+    /** @param array<int, ErrorCode|string> $codes */
+    public function isCodeIn(array $codes): bool
+    {
+        foreach ($codes as $code) {
+            if ($this->isCode($code)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public function getHttpStatusCode(): int
     {
-        return match ($this->errorCode) {
-            self::CODE_BAD_REQUEST => 400,
-            self::CODE_UNAUTHORIZED => 401,
-            self::CODE_FORBIDDEN => 403,
-            self::CODE_NOT_FOUND => 404,
-            self::CODE_METHOD_NOT_ALLOWED => 405,
-            self::CODE_VALIDATION_FAILED => 422,
-            self::CODE_TOO_MANY_REQUESTS => 429,
-            self::CODE_INTERNAL_ERROR, self::CODE_SERVER_ERROR => 500,
-            self::CODE_SERVICE_UNAVAILABLE => 503,
-            default => 500,
-        };
+        return $this->httpStatusOverride
+            ?? $this->errorCodeEnum?->httpStatus()
+            ?? $this->type->defaultHttpStatus();
     }
 
-    /** 判断异常是否可恢复 */
     public function isRecoverable(): bool
     {
-        return match ($this->errorType) {
-            self::TYPE_HTTP => true,
-            self::TYPE_BUSINESS => true,
-            self::TYPE_RUNTIME => in_array($this->errorCode, [
-                self::CODE_TIMEOUT,
-                self::CODE_POOL_EXHAUSTED,
-            ]),
-            self::TYPE_SYSTEM => false,
-            default => false,
-        };
+        return $this->recoverableOverride
+            ?? $this->errorCodeEnum?->isRecoverable()
+            ?? $this->type->isRecoverableByDefault();
     }
 
-    /** 获取异常位置信息 */
+    /** 修复建议：优先取上下文，其次取错误码内置建议 */
+    public function getSuggestion(): ?string
+    {
+        $fromContext = $this->errorContext['suggestion'] ?? null;
+
+        return is_string($fromContext) && $fromContext !== ''
+            ? $fromContext
+            : $this->errorCodeEnum?->suggestion();
+    }
+
     public function getLocation(): array
     {
         return [
@@ -271,224 +395,50 @@ class KodeException extends \Exception
         ];
     }
 
-    /** 获取调用者方法 */
     protected function getCallerMethod(): string
     {
-        $basePath = defined('APP_ROOT') ? constant('APP_ROOT') : dirname(__DIR__);
         $trace = $this->getTrace();
+
         foreach ($trace as $frame) {
-            if (isset($frame['file']) && str_starts_with($frame['file'], $basePath)) {
+            if (!isset($frame['class'])) {
+                continue;
+            }
+            if (!str_starts_with((string) $frame['class'], 'Kode\\Exception\\')) {
                 return $this->formatMethod($frame);
             }
         }
-        return isset($trace[0]) ? $this->formatMethod($trace[0]) : 'unknown';
-    }
 
-    public function toArray(): array
-    {
-        return [
-            'code' => $this->errorCode,
-            'msg' => $this->errorMsg,
-            'type' => $this->errorType,
-            'trace_id' => $this->traceId,
-            'location' => [
-                'file' => $this->getFile(),
-                'line' => $this->getLine(),
-                'method' => $this->getCallerMethod(),
-            ],
-            'context' => $this->errorContext,
-            'chain' => $this->callChain,
-        ];
-    }
-
-    /** 转换为统一响应格式 */
-    public function toResponse(): array
-    {
-        return $this->toArray();
-    }
-
-    /** 设置上下文 */
-    public function withContext(array $context): self
-    {
-        $new = clone $this;
-        $new->errorContext = array_merge($this->errorContext, $context);
-        return $new;
-    }
-
-    // ==================== HTTP 异常快捷方法 ====================
-
-    /** 400 请求参数错误 */
-    public static function bad(string $msg = '请求参数错误', array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_BAD_REQUEST, $msg, $previous, self::TYPE_HTTP, $context);
-    }
-
-    /** 401 未授权 */
-    public static function auth(string $msg = '未授权', array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_UNAUTHORIZED, $msg, $previous, self::TYPE_HTTP, $context);
-    }
-
-    /** 403 禁止访问 */
-    public static function deny(string $msg = '禁止访问', array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_FORBIDDEN, $msg, $previous, self::TYPE_HTTP, $context);
-    }
-
-    /** 404 资源不存在 */
-    public static function notFound(string $msg = '资源不存在', array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_NOT_FOUND, $msg, $previous, self::TYPE_HTTP, $context);
-    }
-
-    /** 422 验证失败 */
-    public static function invalid(string $msg = '验证失败', array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_VALIDATION_FAILED, $msg, $previous, self::TYPE_HTTP, $context);
-    }
-
-    /** 429 请求过频 */
-    public static function frequent(string $msg = '请求过于频繁', array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_TOO_MANY_REQUESTS, $msg, $previous, self::TYPE_HTTP, $context);
-    }
-
-    /** 500 服务器错误 */
-    public static function error(string $msg = '服务器错误', array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_INTERNAL_ERROR, $msg, $previous, self::TYPE_HTTP, $context);
-    }
-
-    /** 503 服务不可用 */
-    public static function unavailable(string $msg = '服务不可用', array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_SERVICE_UNAVAILABLE, $msg, $previous, self::TYPE_HTTP, $context);
-    }
-
-    // ==================== 业务异常快捷方法 ====================
-
-    /** 参数错误 */
-    public static function param(string $msg, array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_INVALID_PARAM, $msg, $previous, self::TYPE_BUSINESS, $context);
-    }
-
-    /** 实体不存在 */
-    public static function missing(string $entity, string $id, ?Throwable $previous = null): self
-    {
-        return new self(
-            self::CODE_NOT_FOUND_ENTITY,
-            "{$entity}[{$id}] 不存在",
-            $previous,
-            self::TYPE_BUSINESS,
-            ['entity' => $entity, 'id' => $id]
-        );
-    }
-
-    /** 数据冲突 */
-    public static function conflict(string $msg, array $context = [], ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_CONFLICT, $msg, $previous, self::TYPE_BUSINESS, $context);
-    }
-
-    // ==================== 运行时异常快捷方法 ====================
-
-    /** 协程崩溃 */
-    public static function coroutinePanic(string $msg, ?Throwable $previous = null): self
-    {
-        return new self(
-            self::CODE_COROUTINE_PANIC,
-            $msg,
-            $previous,
-            self::TYPE_RUNTIME,
-            ['suggestion' => '检查协程状态，确保正确等待']
-        );
-    }
-
-    /** Worker 崩溃 */
-    public static function workerCrash(string $msg, ?Throwable $previous = null): self
-    {
-        return new self(
-            self::CODE_WORKER_CRASH,
-            $msg,
-            $previous,
-            self::TYPE_RUNTIME,
-            ['suggestion' => 'Worker 将被自动重启']
-        );
-    }
-
-    /** 连接池耗尽 */
-    public static function poolExhausted(string $msg, ?Throwable $previous = null): self
-    {
-        return new self(
-            self::CODE_POOL_EXHAUSTED,
-            $msg,
-            $previous,
-            self::TYPE_RUNTIME,
-            ['suggestion' => '增加池大小或降低并发']
-        );
-    }
-
-    /** 超时 */
-    public static function timeout(string $msg, ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_TIMEOUT, $msg, $previous, self::TYPE_RUNTIME);
-    }
-
-    /** 死锁 */
-    public static function deadlock(string $msg, ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_DEADLOCK, $msg, $previous, self::TYPE_RUNTIME);
-    }
-
-    // ==================== 系统异常快捷方法 ====================
-
-    /** 内存耗尽 */
-    public static function memory(string $msg = '内存耗尽', ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_MEMORY_EXHAUSTED, $msg, $previous, self::TYPE_SYSTEM);
-    }
-
-    /** 磁盘空间不足 */
-    public static function disk(string $msg = '磁盘空间不足', ?Throwable $previous = null): self
-    {
-        return new self(self::CODE_DISK_FULL, $msg, $previous, self::TYPE_SYSTEM);
-    }
-
-    // ==================== 增强方法 ====================
-
-    /** 从已有异常创建（保留原始信息） */
-    public static function from(Throwable $exception, ?string $errorCode = null, ?string $errorMsg = null): self
-    {
-        $code = $errorCode ?? 'E9999';
-        $msg = $errorMsg ?? $exception->getMessage();
-
-        if ($exception instanceof self) {
-            return $exception;
+        foreach ($trace as $frame) {
+            if (isset($frame['function'])) {
+                return $this->formatMethod($frame);
+            }
         }
 
-        return new self($code, $msg, $exception, self::TYPE_SYSTEM);
+        return 'unknown';
     }
 
-    /** 重新抛出为 KodeException */
-    public static function rethrow(Throwable $exception, string $errorCode, string $errorMsg, string $type = self::TYPE_SYSTEM): self
+    /** 上游异常链（不含自身） @return list<Throwable> */
+    public function getPreviousChain(): array
     {
-        return new self($errorCode, $errorMsg, $exception, $type);
+        $chain = [];
+        $previous = $this->getPrevious();
+
+        while ($previous !== null && count($chain) < self::MAX_CHAIN_DEPTH) {
+            $chain[] = $previous;
+            $previous = $previous->getPrevious();
+        }
+
+        return $chain;
     }
 
-    /** 验证是否为指定错误码 */
-    public function isCode(string $code): bool
+    /** 最底层根因异常 */
+    public function getRootCause(): Throwable
     {
-        return $this->errorCode === $code;
+        $chain = $this->getPreviousChain();
+
+        return $chain === [] ? $this : $chain[array_key_last($chain)];
     }
 
-    /** 验证是否匹配多个错误码之一 */
-    public function isCodeIn(array $codes): bool
-    {
-        return in_array($this->errorCode, $codes, true);
-    }
-
-    /** 获取简化的错误描述 */
     public function getSummary(): string
     {
         return sprintf(
@@ -500,7 +450,364 @@ class KodeException extends \Exception
         );
     }
 
-    // ==================== 静态便捷方法 ====================
+    // ==================== 不可变派生 ====================
+
+    /**
+     * 以当前实例为蓝本构造一个新实例，并拷贝不可变标识与链路。
+     *
+     * 注意：PHP 不允许 clone 任何 Throwable 子类（含本类），
+     * 因此不可变派生必须走 new 而非 clone。
+     */
+    protected function replicate(): static
+    {
+        $clone = new static(
+            $this->errorCodeEnum ?? $this->errorCode,
+            $this->errorMsg,
+            $this->getPrevious(),
+            $this->type,
+            $this->errorContext
+        );
+
+        $clone->errorCode = $this->errorCode;
+        $clone->errorContext = $this->errorContext;
+        $clone->traceId = $this->traceId;
+        $clone->spanId = $this->spanId;
+        $clone->occurredAt = $this->occurredAt;
+        $clone->callChain = $this->callChain;
+        $clone->httpStatusOverride = $this->httpStatusOverride;
+        $clone->recoverableOverride = $this->recoverableOverride;
+
+        return $clone;
+    }
+
+    /** 追加上下文，返回新实例 */
+    public function withContext(#[\SensitiveParameter] array $context): static
+    {
+        $clone = $this->replicate();
+        $clone->errorContext = array_merge(
+            $this->errorContext,
+            self::sanitizer()->sanitize($context)
+        );
+
+        return $clone;
+    }
+
+    /** 覆盖 HTTP 状态码，返回新实例 */
+    public function withHttpStatus(int $status): static
+    {
+        $clone = $this->replicate();
+        $clone->httpStatusOverride = $status;
+
+        return $clone;
+    }
+
+    /** 覆盖可恢复标记，返回新实例 */
+    public function withRecoverable(bool $recoverable): static
+    {
+        $clone = $this->replicate();
+        $clone->recoverableOverride = $recoverable;
+
+        return $clone;
+    }
+
+    /** 挂载到指定链路，返回新实例 */
+    public function withTraceId(string $traceId): static
+    {
+        if (!IdGenerator::isValidTraceId($traceId)) {
+            throw new \InvalidArgumentException('非法 trace id，需为 32 位小写十六进制字符串');
+        }
+
+        $clone = $this->replicate();
+        $clone->traceId = $traceId;
+
+        return $clone;
+    }
+
+    // ==================== 序列化 ====================
+
+    public function toArray(): array
+    {
+        $data = [
+            'code' => $this->errorCode,
+            'msg' => $this->errorMsg,
+            'type' => $this->type->value,
+            'trace_id' => $this->traceId,
+            'span_id' => $this->spanId,
+            'location' => $this->getLocation(),
+            'context' => $this->errorContext,
+            'chain' => $this->callChain,
+        ];
+
+        $suggestion = $this->getSuggestion();
+        if ($suggestion !== null) {
+            $data['suggestion'] = $suggestion;
+        }
+
+        return $data;
+    }
+
+    public function toResponse(): array
+    {
+        return $this->toArray();
+    }
+
+    public function jsonSerialize(): array
+    {
+        return $this->toArray();
+    }
+
+    public function toJson(int $flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES): string
+    {
+        return json_encode($this, $flags | JSON_THROW_ON_ERROR);
+    }
+
+    public function __toString(): string
+    {
+        return $this->getSummary();
+    }
+
+    // ==================== HTTP 异常快捷方法 ====================
+
+    /** 400 请求参数错误 */
+    public static function bad(string $msg = '请求参数错误', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::BadRequest, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 401 未授权 */
+    public static function auth(string $msg = '未授权', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::Unauthorized, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 403 禁止访问 */
+    public static function deny(string $msg = '禁止访问', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::Forbidden, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 404 资源不存在 */
+    public static function notFound(string $msg = '资源不存在', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::NotFound, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 405 请求方法不允许 */
+    public static function methodNotAllowed(string $msg = '请求方法不允许', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::MethodNotAllowed, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 422 验证失败 */
+    public static function invalid(string $msg = '验证失败', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::ValidationFailed, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 429 请求过频 */
+    public static function frequent(string $msg = '请求过于频繁', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::TooManyRequests, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 500 服务器错误 */
+    public static function error(string $msg = '服务器错误', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::InternalError, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 502 网关错误 */
+    public static function badGateway(string $msg = '网关错误', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::BadGateway, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    /** 503 服务不可用 */
+    public static function unavailable(string $msg = '服务不可用', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::ServiceUnavailable, $msg, $previous, ErrorType::Http, $context);
+    }
+
+    // ==================== 业务异常快捷方法 ====================
+
+    /** 参数错误 */
+    public static function param(string $msg, array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::InvalidParam, $msg, $previous, ErrorType::Business, $context);
+    }
+
+    /** 实体不存在 */
+    public static function missing(string $entity, string $id, ?Throwable $previous = null): static
+    {
+        return new static(
+            ErrorCode::NotFoundEntity,
+            "{$entity}[{$id}] 不存在",
+            $previous,
+            ErrorType::Business,
+            ['entity' => $entity, 'id' => $id]
+        );
+    }
+
+    /** 数据冲突 */
+    public static function conflict(string $msg, array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::Conflict, $msg, $previous, ErrorType::Business, $context);
+    }
+
+    /** 配额超限 */
+    public static function quota(string $msg = '配额超限', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::QuotaExceeded, $msg, $previous, ErrorType::Business, $context);
+    }
+
+    /** 状态不允许 */
+    public static function stateInvalid(string $msg = '状态不允许该操作', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::StateInvalid, $msg, $previous, ErrorType::Business, $context);
+    }
+
+    // ==================== 运行时异常快捷方法 ====================
+
+    /** 协程崩溃 */
+    public static function coroutinePanic(string $msg = '协程崩溃', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::CoroutinePanic, $msg, $previous, ErrorType::Runtime, $context);
+    }
+
+    /** Worker 崩溃 */
+    public static function workerCrash(string $msg = 'Worker 崩溃', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::WorkerCrash, $msg, $previous, ErrorType::Runtime, $context);
+    }
+
+    /** 连接池耗尽 */
+    public static function poolExhausted(string $msg = '连接池耗尽', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::PoolExhausted, $msg, $previous, ErrorType::Runtime, $context);
+    }
+
+    /** 超时 */
+    public static function timeout(string $msg = '执行超时', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::Timeout, $msg, $previous, ErrorType::Runtime, $context);
+    }
+
+    /** 死锁 */
+    public static function deadlock(string $msg = '检测到死锁', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::Deadlock, $msg, $previous, ErrorType::Runtime, $context);
+    }
+
+    /** 熔断打开 */
+    public static function circuitOpen(string $msg = '熔断器已打开', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::CircuitOpen, $msg, $previous, ErrorType::Runtime, $context);
+    }
+
+    /** 依赖服务异常 */
+    public static function dependency(string $msg = '依赖服务异常', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::DependencyFailure, $msg, $previous, ErrorType::Runtime, $context);
+    }
+
+    // ==================== 系统异常快捷方法 ====================
+
+    /** 内存耗尽 */
+    public static function memory(string $msg = '内存耗尽', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::MemoryExhausted, $msg, $previous, ErrorType::System, $context);
+    }
+
+    /** 磁盘空间不足 */
+    public static function disk(string $msg = '磁盘空间不足', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::DiskFull, $msg, $previous, ErrorType::System, $context);
+    }
+
+    /** 致命错误 */
+    public static function fatal(string $msg = '致命错误', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::FatalError, $msg, $previous, ErrorType::System, $context);
+    }
+
+    /** 配置不合法 */
+    public static function config(string $msg = '配置不合法', array $context = [], ?Throwable $previous = null): static
+    {
+        return new static(ErrorCode::ConfigInvalid, $msg, $previous, ErrorType::System, $context);
+    }
+
+    // ==================== 通用构造 ====================
+
+    /** 按错误码枚举构造，消息与类型自动推导 */
+    public static function make(
+        ErrorCode $code,
+        ?string $msg = null,
+        array $context = [],
+        ?Throwable $previous = null
+    ): static {
+        return new static($code, $msg, $previous, $code->type(), $context);
+    }
+
+    /** 从已有异常创建；已是 KodeException 时原样返回 */
+    public static function from(Throwable $exception, ErrorCode|string|null $errorCode = null, ?string $errorMsg = null): static
+    {
+        if ($exception instanceof static) {
+            return $exception;
+        }
+
+        return new static(
+            $errorCode ?? ErrorCode::Unknown,
+            $errorMsg ?? $exception->getMessage(),
+            $exception,
+            null,
+            ['origin_class' => $exception::class]
+        );
+    }
+
+    /** 包装任意异常并指定错误码与类型 */
+    public static function wrap(
+        Throwable $exception,
+        ErrorCode|string $errorCode,
+        ?string $errorMsg = null,
+        ErrorType|string|null $type = null,
+        array $context = []
+    ): static {
+        return new static(
+            $errorCode,
+            $errorMsg ?? $exception->getMessage(),
+            $exception,
+            $type,
+            $context + ['origin_class' => $exception::class]
+        );
+    }
+
+    /** 重新抛出为 KodeException */
+    public static function rethrow(
+        Throwable $exception,
+        ErrorCode|string $errorCode,
+        string $errorMsg,
+        ErrorType|string $type = ErrorType::System
+    ): static {
+        return new static($errorCode, $errorMsg, $exception, $type);
+    }
+
+    /** 条件成立时抛出 */
+    public static function throwIf(bool $condition, self $exception): void
+    {
+        if ($condition) {
+            throw $exception;
+        }
+    }
+
+    /** 条件不成立时抛出 */
+    public static function throwUnless(bool $condition, self $exception): void
+    {
+        if (!$condition) {
+            throw $exception;
+        }
+    }
+
+    // ==================== 静态便捷入口 ====================
 
     /** 获取异常管理器实例 */
     public static function manager(): ExceptionManager
@@ -558,38 +865,32 @@ class KodeException extends \Exception
         return ExceptionManager::getInstance()->render($exception);
     }
 
-    /** 记录日志 */
-    public static function log(string $level, string $message, array $context = []): void
+    public static function log(string $level, string|Stringable $message, array $context = []): void
     {
         self::logger()->log($level, $message, $context);
     }
 
-    /** Debug 日志 */
-    public static function debug(string $message, array $context = []): void
+    public static function debug(string|Stringable $message, array $context = []): void
     {
         self::logger()->debug($message, $context);
     }
 
-    /** Info 日志 */
-    public static function info(string $message, array $context = []): void
+    public static function info(string|Stringable $message, array $context = []): void
     {
         self::logger()->info($message, $context);
     }
 
-    /** Warning 日志 */
-    public static function warning(string $message, array $context = []): void
+    public static function warning(string|Stringable $message, array $context = []): void
     {
         self::logger()->warning($message, $context);
     }
 
-    /** Error 日志 */
-    public static function errorLog(string $message, array $context = []): void
+    public static function errorLog(string|Stringable $message, array $context = []): void
     {
         self::logger()->error($message, $context);
     }
 
-    /** Critical 日志 */
-    public static function critical(string $message, array $context = []): void
+    public static function critical(string|Stringable $message, array $context = []): void
     {
         self::logger()->critical($message, $context);
     }

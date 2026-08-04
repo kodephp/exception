@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Kode\Exception\Tracer;
 
 use Kode\Exception\KodeException;
+use Kode\Exception\Support\IdGenerator;
+use Kode\Exception\Support\Runtime;
 use Throwable;
 
 /**
@@ -41,18 +43,17 @@ class DistributedTracer
     /** 加载或创建 TraceId */
     protected function loadOrCreateTraceId(): string
     {
-        if (isset($_SERVER['HTTP_X_TRACE_ID'])) {
-            return $_SERVER['HTTP_X_TRACE_ID'];
+        $headerTraceId = $_SERVER['HTTP_X_TRACE_ID'] ?? null;
+        if (is_string($headerTraceId) && IdGenerator::isValidTraceId($headerTraceId)) {
+            return $headerTraceId;
         }
 
-        if (function_exists('swooleCoroutine_getuid')) {
-            $cid = swooleCoroutine_getuid();
-            if ($cid > 0) {
-                return sprintf('%s-c%d', $this->generateTraceId(), $cid);
-            }
+        $coroutineId = Runtime::coroutineId();
+        if ($coroutineId !== null) {
+            return sprintf('%s-c%d', IdGenerator::traceId(), $coroutineId);
         }
 
-        return $this->generateTraceId();
+        return IdGenerator::traceId();
     }
 
     /** 加载父追踪头 */
@@ -64,23 +65,16 @@ class DistributedTracer
         ];
     }
 
-    /** 生成 TraceId */
+    /** 生成 TraceId（W3C 32 位十六进制，CSPRNG） */
     public function generateTraceId(): string
     {
-        return sprintf(
-            '%08x-%04x-%04x-%04x-%012x',
-            time(),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0xffff),
-            mt_rand(0, 0x3fff) | 0x8000,
-            mt_rand(0, 0xffffffffffff)
-        );
+        return IdGenerator::traceId();
     }
 
-    /** 生成 SpanId */
+    /** 生成 SpanId（16 位十六进制，CSPRNG） */
     public function generateSpanId(): string
     {
-        return sprintf('%016x', mt_rand(0, PHP_INT_MAX));
+        return IdGenerator::spanId();
     }
 
     /** 生成实例 ID */
@@ -255,15 +249,11 @@ class DistributedTracer
             'pid' => getmypid(),
         ];
 
-        if (function_exists('swoole_version')) {
-            $env['runtime'] = 'swoole';
-            $env['coroutine_id'] = swooleCoroutine_getuid();
-        } elseif (function_exists('Fiber::getCurrent')) {
-            $fiber = Fiber::getCurrent();
-            $env['runtime'] = 'fiber';
-            $env['fiber_id'] = $fiber ? spl_object_id($fiber) : null;
-        } else {
-            $env['runtime'] = 'fpm';
+        $env['runtime'] = Runtime::name();
+
+        $coroutineId = Runtime::coroutineId();
+        if ($coroutineId !== null) {
+            $env['coroutine_id'] = $coroutineId;
         }
 
         if (isset($_SERVER['REQUEST_URI'])) {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kode\Exception\Tracer;
 
 use Kode\Exception\KodeException;
+use Kode\Exception\Support\Runtime;
 
 /**
  * 错误链路追踪器
@@ -35,16 +36,11 @@ class ChainTracer
             'timestamp' => time(),
         ];
 
-        if (function_exists('swoole_version')) {
-            $env['runtime'] = 'swoole';
-            $env['swoole_version'] = swoole_version();
-            $env['coroutine_id'] = swooleCoroutine_getuid();
-        } elseif (function_exists('Fiber::getCurrent')) {
-            $env['runtime'] = 'fiber';
-            $fiber = \Fiber::getCurrent();
-            $env['coroutine_id'] = $fiber ? spl_object_id($fiber) : null;
-        } else {
-            $env['runtime'] = 'fpm';
+        $env['runtime'] = Runtime::name();
+
+        $coroutineId = Runtime::coroutineId();
+        if ($coroutineId !== null) {
+            $env['coroutine_id'] = $coroutineId;
         }
 
         if (function_exists('workerman_getpid')) {

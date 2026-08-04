@@ -4,44 +4,56 @@ declare(strict_types=1);
 
 namespace Kode\Exception\Handler;
 
+use Kode\Exception\Enum\ErrorType;
 use Kode\Exception\KodeException;
+use Kode\Exception\Support\Runtime;
+use Override;
 use Psr\Log\LoggerInterface;
+use Psr\Log\LogLevel;
 use Throwable;
 
 /**
  * 运行时异常处理器
- * 专门处理 KodeException 中 type=runtime 的异常
+ *
+ * 仅处理 type=runtime 的 KodeException；可恢复记 error，不可恢复记 critical。
  */
-class RuntimeExceptionHandler implements ExceptionHandlerInterface
+final class RuntimeExceptionHandler implements ExceptionHandlerInterface
 {
-    protected LoggerInterface $logger;
+    public const int PRIORITY = 80;
 
-    public function __construct(LoggerInterface $logger)
-    {
-        $this->logger = $logger;
+    public function __construct(
+        private readonly LoggerInterface $logger,
+    ) {
     }
 
+    #[Override]
     public function handle(Throwable $exception): bool
     {
-        if ($exception instanceof KodeException && $exception->getErrorType() === KodeException::TYPE_RUNTIME) {
-            $context = $exception->getErrorContext();
-            $level = isset($context['suggestion']) ? 'error' : 'critical';
+        if (!$exception instanceof KodeException || $exception->getType() !== ErrorType::Runtime) {
+            return false;
+        }
 
-            $this->logger->log($level, '运行时异常', [
+        $this->logger->log(
+            $exception->isRecoverable() ? LogLevel::ERROR : LogLevel::CRITICAL,
+            '运行时异常',
+            [
                 'code' => $exception->getErrorCode(),
                 'msg' => $exception->getErrorMsg(),
                 'trace_id' => $exception->getTraceId(),
-                'context' => $context,
-            ]);
+                'recoverable' => $exception->isRecoverable(),
+                'suggestion' => $exception->getSuggestion(),
+                'runtime' => Runtime::name(),
+                'coroutine_id' => Runtime::coroutineId(),
+                'context' => $exception->getErrorContext(),
+            ]
+        );
 
-            return true;
-        }
-
-        return false;
+        return true;
     }
 
+    #[Override]
     public function getPriority(): int
     {
-        return 80;
+        return self::PRIORITY;
     }
 }
