@@ -73,15 +73,26 @@ final class ContextSanitizer
     /** 判断键名是否敏感 */
     public function isSensitiveKey(string $key): bool
     {
-        $normalized = strtolower(str_replace(['-', ' '], '_', $key));
+        $normalized = self::normalizeKey($key);
+        $tokens = explode('_', $normalized);
 
+        // 整键或任意词元命中即视为敏感；词元匹配避免把 author / design / assign
+        // 这类普通字段误判为 auth / sign 而脱敏。
         foreach ($this->sensitiveKeys as $needle) {
-            if (str_contains($normalized, $needle)) {
+            if ($needle === $normalized || in_array($needle, $tokens, true)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /** 键名归一化：拆分驼峰、统一分隔符为下划线、转小写 */
+    private static function normalizeKey(string $key): string
+    {
+        $split = (string) preg_replace('/(?<!^)(?=[A-Z])/', '_', $key);
+
+        return strtolower((string) preg_replace('/[^a-zA-Z0-9]+/', '_', $split));
     }
 
     /** 脱敏整个上下文数组 */

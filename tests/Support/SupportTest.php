@@ -53,16 +53,29 @@ class SupportTest extends TestCase
         $this->assertFalse(IdGenerator::isValidSpanId(str_repeat('0', 16)));
     }
 
-    public function testRuntimeInCli(): void
+    public function testRuntimeNameIsValidConstant(): void
     {
         $this->assertContains(
             Runtime::name(),
             [Runtime::CLI, Runtime::FPM, Runtime::SWOOLE, Runtime::WORKERMAN, Runtime::ROADRUNNER, Runtime::FRANKENPHP, Runtime::FIBER]
         );
-        $this->assertFalse(Runtime::inCoroutine());
-        $this->assertNull(Runtime::coroutineId());
-        $this->assertSame('main', Runtime::contextKey());
-        $this->assertFalse(Runtime::isWorker());
+    }
+
+    public function testRuntimeCoroutineStateConsistent(): void
+    {
+        // 协程态内部须自洽，且不依赖全局进程是否被 Swoole 自动包裹（Environment-agnostic）。
+        $inCoroutine = Runtime::inCoroutine();
+        $this->assertSame($inCoroutine, Runtime::coroutineId() !== null);
+        $this->assertSame($inCoroutine, Runtime::contextKey() !== 'main');
+
+        if (!$inCoroutine) {
+            $this->assertNull(Runtime::coroutineId());
+            $this->assertSame('main', Runtime::contextKey());
+            // 非协程且 SAPI 为 cli 时，绝不应误报为 Swoole 运行时
+            if (PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg') {
+                $this->assertNotSame(Runtime::SWOOLE, Runtime::name());
+            }
+        }
     }
 
     public function testRuntimeSnapshot(): void
@@ -134,5 +147,41 @@ class SupportTest extends TestCase
         $san = new ContextSanitizer();
         $san->addSensitiveKeys('ssn');
         $this->assertTrue($san->isSensitiveKey('user_ssn'));
+    }
+
+    public function testContextSanitizerTokenBasedNoOverMasking(): void
+    {
+        $san = new ContextSanitizer();
+
+        // 整键或词元命中才脱敏
+        $this->assertTrue($san->isSensitiveKey('password'));
+        $this->assertTrue($san->isSensitiveKey('user_password'));
+        $this->assertTrue($san->isSensitiveKey('apiKey'));        // 驼峰
+        $this->assertTrue($san->isSensitiveKey('authorization'));
+        $this->assertTrue($san->isSensitiveKey('signature'));
+
+        // 普通字段不应被 auth / sign 子串误伤
+        $this->assertFalse($san->isSensitiveKey('author'));
+        $this->assertFalse($san->isSensitiveKey('design'));
+        $this->assertFalse($san->isSensitiveKey('assign'));
+        $this->assertFalse($san->isSensitiveKey('signal'));
+    }
+
+    public function testContextSanitizerMasksButKeepsBenign(): void
+    {
+        $san = new ContextSanitizer();
+        $out = $san->sanitize([
+            'author' => 'Jane Doe',
+            'authorization' => 'Bearer secret',
+            'design' => 'blueprint',
+            'signature' => 'abc123',
+            'user_password' => 'hunter2',
+        ]);
+
+        $this->assertSame('Jane Doe', $out['author']);
+        $this->assertSame('blueprint', $out['design']);
+        $this->assertSame(ContextSanitizer::DEFAULT_MASK, $out['authorization']);
+        $this->assertSame(ContextSanitizer::DEFAULT_MASK, $out['signature']);
+        $this->assertSame(ContextSanitizer::DEFAULT_MASK, $out['user_password']);
     }
 }

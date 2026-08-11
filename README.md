@@ -242,6 +242,23 @@ curl_setopt($ch, CURLOPT_HTTPHEADER, [
 // 被调用方自动接收父追踪
 ```
 
+### 协程 / Worker 运行时程序化响应
+
+Swoole、Workerman、Fiber 等不走 PHP 原生 `http` 输出，需自行写入响应对象。
+使用 `ExceptionManager::respond()` 即可获得 `状态吗 + 响应体`，且**不会**触发 `echo`：
+
+```php
+$manager->setSendHeaders(false);
+
+$result = $manager->respond($exception);
+// $result = ['status' => 404, 'body' => ['code' => 'E1004', 'msg' => '...', ...]]
+
+// Swoole 中：
+$response->status($result['status']);
+$response->header('Content-Type', 'application/json; charset=utf-8');
+$response->end(json_encode($result['body'], JSON_UNESCAPED_UNICODE));
+```
+
 ## 配置
 
 ```php

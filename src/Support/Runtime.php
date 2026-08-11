@@ -130,8 +130,14 @@ final class Runtime
 
     private static function detect(): string
     {
-        if (class_exists('\Swoole\Coroutine', false) || extension_loaded('swoole') || extension_loaded('openswoole')) {
+        // 仅当确实处于 Swoole 协程内（getuid > 0）才认定为 Swoole 运行时。
+        // 不能仅凭 extension_loaded('swoole') 判定：开发机常加载扩展却运行普通 CLI 脚本。
+        if (self::swooleCoroutineId() !== null) {
             return self::SWOOLE;
+        }
+
+        if (self::fiberId() !== null) {
+            return self::FIBER;
         }
 
         if (class_exists('\Workerman\Worker', false)) {
@@ -144,10 +150,6 @@ final class Runtime
 
         if (getenv('RR_MODE') !== false || class_exists('\Spiral\RoadRunner\Worker', false)) {
             return self::ROADRUNNER;
-        }
-
-        if (class_exists(Fiber::class, false) && Fiber::getCurrent() !== null) {
-            return self::FIBER;
         }
 
         if (PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg') {

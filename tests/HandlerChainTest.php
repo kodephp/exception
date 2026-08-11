@@ -104,4 +104,57 @@ class HandlerChainTest extends TestCase
         $this->assertStringNotContainsString("\n", $clean);
         $this->assertSame('abcX-Injected: evil', $clean);
     }
+
+    public function testRespondReturnsStatusAndBodyWithoutEcho(): void
+    {
+        $logger = new class implements \Psr\Log\LoggerInterface {
+            /** @var array<int, array{level: mixed, message: string}> */
+            public array $records = [];
+            public function emergency(string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => 'emergency', 'message' => (string) $message]; }
+            public function alert(string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => 'alert', 'message' => (string) $message]; }
+            public function critical(string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => 'critical', 'message' => (string) $message]; }
+            public function error(string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => 'error', 'message' => (string) $message]; }
+            public function warning(string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => 'warning', 'message' => (string) $message]; }
+            public function notice(string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => 'notice', 'message' => (string) $message]; }
+            public function info(string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => 'info', 'message' => (string) $message]; }
+            public function debug(string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => 'debug', 'message' => (string) $message]; }
+            public function log($level, string|\Stringable $message, array $context = []): void { $this->records[] = ['level' => $level, 'message' => (string) $message]; }
+        };
+
+        $m = (new ExceptionManager($logger))->setSendHeaders(false);
+
+        $result = $m->respond(KodeException::notFound('missing'));
+
+        $this->assertSame(404, $result['status']);
+        $this->assertArrayHasKey('body', $result);
+        $this->assertSame('E1004', $result['body']['code']);
+        // 默认兜底处理器已记录日志
+        $this->assertNotEmpty($logger->records);
+    }
+
+    public function testHandleExceptionNeverRethrowsWhenLoggerFails(): void
+    {
+        $throwingLogger = new class implements \Psr\Log\LoggerInterface {
+            private function fail(): void { throw new \RuntimeException('logger broken'); }
+            public function emergency(string|\Stringable $message, array $context = []): void { $this->fail(); }
+            public function alert(string|\Stringable $message, array $context = []): void { $this->fail(); }
+            public function critical(string|\Stringable $message, array $context = []): void { $this->fail(); }
+            public function error(string|\Stringable $message, array $context = []): void { $this->fail(); }
+            public function warning(string|\Stringable $message, array $context = []): void { $this->fail(); }
+            public function notice(string|\Stringable $message, array $context = []): void { $this->fail(); }
+            public function info(string|\Stringable $message, array $context = []): void { $this->fail(); }
+            public function debug(string|\Stringable $message, array $context = []): void { $this->fail(); }
+            public function log($level, string|\Stringable $message, array $context = []): void { $this->fail(); }
+        };
+
+        $m = (new ExceptionManager($throwingLogger))->setSendHeaders(false);
+
+        ob_start();
+        try {
+            $m->handleException(KodeException::bad('x'));
+            $this->assertTrue(true); // 未向上抛出异常
+        } finally {
+            ob_end_clean();
+        }
+    }
 }

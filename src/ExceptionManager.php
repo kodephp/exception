@@ -234,10 +234,33 @@ class ExceptionManager
 
     public function handleException(Throwable $exception): void
     {
-        $this->report($exception);
+        try {
+            $this->report($exception);
 
-        $response = $this->format($exception);
-        $this->sendResponse($response, $this->determineStatusCode($exception));
+            $response = $this->format($exception);
+            $this->sendResponse($response, $this->determineStatusCode($exception));
+        } catch (Throwable $handlerError) {
+            // 全局异常处理器是最后一道防线，自身绝不能再抛出，否则会暴露裸 fatal。
+            if ($this->sendHeaders && !headers_sent()) {
+                http_response_code(500);
+                header('Content-Type: application/json; charset=utf-8');
+            }
+
+            echo json_encode([
+                'code' => ErrorCode::Unknown->value,
+                'msg' => '内部错误处理失败',
+                'type' => 'system',
+            ], JSON_UNESCAPED_UNICODE);
+
+            try {
+                $this->logger->critical('全局异常处理器自身失败', [
+                    'error' => $handlerError->getMessage(),
+                    'original' => $exception->getMessage(),
+                ]);
+            } catch (Throwable) {
+                // 日志组件也坏了，放弃记录
+            }
+        }
     }
 
     /** 仅上报不输出，适用于捕获后继续执行的场景 */
@@ -320,6 +343,24 @@ class ExceptionManager
     public function render(Throwable $exception): string
     {
         return $this->encode($this->format($exception));
+    }
+
+    /**
+     * 程序化处理异常：上报日志并返回 [状态码, 响应体]。
+     *
+     * 适用于 Swoole / Workerman / Fiber 等不走 PHP 原生 http 输出的运行时，
+     * 调用方自行把状态码与响应体写入对应响应对象，无需本类 echo。
+     *
+     * @return array{status: int, body: array<string, mixed>}
+     */
+    public function respond(Throwable $exception): array
+    {
+        $this->report($exception);
+
+        return [
+            'status' => $this->determineStatusCode($exception),
+            'body' => $this->format($exception),
+        ];
     }
 
     protected function determineStatusCode(Throwable $exception): int
