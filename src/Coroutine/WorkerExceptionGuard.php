@@ -16,12 +16,17 @@ use Throwable;
  */
 class WorkerExceptionGuard
 {
+    /** 失败协程快照上限：常驻 worker 内无界累积会随请求量吃满内存 */
+    public const int MAX_FAILED_COROUTINES = 100;
+
     protected LoggerInterface $logger;
     protected ExceptionManager $exceptionManager;
     protected bool $isWorker;
     protected int $maxRetries;
     protected int $retryCount = 0;
     protected array $failedCoroutines = [];
+    /** @var (callable(string, Throwable): void)|null 主管进程通知钩子 */
+    protected $supervisorNotifier = null;
 
     public function __construct(
         LoggerInterface $logger,
@@ -44,7 +49,7 @@ class WorkerExceptionGuard
         try {
             return $callback();
         } catch (Throwable $e) {
-            return $this->handleWorkerException($e);
+            return $this->handleWorkerException($e, $callback);
         }
     }
 
@@ -62,7 +67,7 @@ class WorkerExceptionGuard
         }
     }
 
-    protected function handleWorkerException(Throwable $exception): mixed
+    protected function handleWorkerException(Throwable $exception, ?callable $callback = null): mixed
     {
         $this->logException($exception);
 
@@ -72,7 +77,7 @@ class WorkerExceptionGuard
         }
 
         if ($this->shouldRetry($exception)) {
-            return $this->retryOrFail($exception);
+            return $this->retryOrFail($exception, $callback);
         }
 
         return $this->returnErrorResponse($exception);
@@ -83,6 +88,10 @@ class WorkerExceptionGuard
         string $coroutineId,
         CoroutineExceptionContext $context
     ): mixed {
+        if (count($this->failedCoroutines) >= self::MAX_FAILED_COROUTINES) {
+            unset($this->failedCoroutines[array_key_first($this->failedCoroutines)]);
+        }
+
         $this->failedCoroutines[$coroutineId] = [
             'exception' => $exception,
             'context' => $context,
@@ -143,28 +152,58 @@ class WorkerExceptionGuard
         return false;
     }
 
-    protected function retryOrFail(Throwable $exception): mixed
+    protected function retryOrFail(Throwable $exception, ?callable $callback = null): mixed
     {
-        $this->retryCount++;
+        if ($callback === null) {
+            $this->logger->error('无可重试的调用体，直接返回错误响应', [
+                'exception' => $exception->getMessage(),
+            ]);
+            $this->retryCount = 0;
 
-        if ($this->retryCount < $this->maxRetries) {
+            return $this->returnErrorResponse($exception);
+        }
+
+        for ($attempt = 1; $attempt <= $this->maxRetries; $attempt++) {
+            $this->retryCount = $attempt;
             $this->logger->warning('异常后重试', [
-                'attempt' => $this->retryCount,
+                'attempt' => $attempt,
                 'max_retries' => $this->maxRetries,
                 'exception' => $exception->getMessage(),
             ]);
 
-            usleep(100000 * $this->retryCount);
-            return null;
+            $this->backoff($attempt);
+
+            try {
+                $result = $callback();
+                $this->retryCount = 0;
+
+                return $result;
+            } catch (Throwable $retryFailure) {
+                if ($this->isCriticalException($retryFailure) || !$this->shouldRetry($retryFailure)) {
+                    $this->retryCount = 0;
+
+                    return $this->handleWorkerException($retryFailure);
+                }
+                $exception = $retryFailure;
+            }
         }
 
         $this->logger->error('超过最大重试次数', [
-            'attempts' => $this->retryCount,
+            'attempts' => $this->maxRetries,
             'exception' => $exception->getMessage(),
         ]);
-
         $this->retryCount = 0;
+
         return $this->returnErrorResponse($exception);
+    }
+
+    /**
+     * 重试退避。注意这是同步阻塞等待，只可用于 worker 级后台执行，
+     * 请求路径（热路径）禁用 —— 见 README 的性能约束。
+     */
+    protected function backoff(int $attempt): void
+    {
+        usleep(100000 * $attempt);
     }
 
     protected function returnErrorResponse(Throwable $exception): mixed
@@ -194,17 +233,31 @@ class WorkerExceptionGuard
 
     protected function notifyWorkerSupervisor(string $coroutineId, Throwable $exception): void
     {
-        if (function_exists('swoole_server_getswmaster')) {
-            $server = swoole_server_getswmaster();
-            if ($server) {
-                $server->notifyWorkerError($coroutineId, $exception);
-            }
+        $notifier = $this->supervisorNotifier;
+        if ($notifier === null) {
+            return;
         }
+
+        try {
+            $notifier($coroutineId, $exception);
+        } catch (Throwable $e) {
+            // 通知主管进程失败绝不能影响主流程
+            $this->logger->warning('主管进程通知失败', ['error' => $e->getMessage()]);
+        }
+    }
+
+    /** 注册主管进程通知钩子（由常驻进程运行时在 worker 启动时注入） */
+    public function setSupervisorNotifier(?callable $notifier): self
+    {
+        $this->supervisorNotifier = $notifier;
+
+        return $this;
     }
 
     protected function shouldExitWorker(Throwable $exception): bool
     {
-        return $exception instanceof \Error || $exception instanceof \TypeError;
+        // 只在常驻 worker 内自我退出（交给主管进程重启）；FPM / CLI 下退出会带走整个进程组
+        return $this->isWorker && $exception instanceof \Error;
     }
 
     protected function exitWorker(int $code): void

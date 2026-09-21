@@ -106,6 +106,8 @@ class KodeException extends Exception implements JsonSerializable, Stringable
 
     /** 全局链路上下文 */
     private static ?TraceContext $traceContext = null;
+    /** 链路上下文是否由宿主显式注入（true 时不再按请求头自动换绑） */
+    private static bool $traceContextBound = false;
     /** 全局脱敏器 */
     private static ?ContextSanitizer $sanitizer = null;
     /** 是否采集堆栈实参 */
@@ -147,22 +149,65 @@ class KodeException extends Exception implements JsonSerializable, Stringable
 
     // ==================== 全局链路上下文 ====================
 
-    /** 获取当前链路上下文，首次访问时从请求头恢复或新建 */
+    /**
+     * 获取当前链路上下文，首次访问时从请求头恢复或新建
+     *
+     * 常驻多进程模型下 $_SERVER 的入向链路头随每个请求更新（kode/framework 的
+     * TraceMiddleware 每请求回写 X-Trace-Id），故缓存必须随之换绑：否则同一 worker
+     * 生命周期内全部请求共用首个 trace_id，日志与审计无法按链路串联。
+     * 宿主显式 setTraceContext() 注入的上下文优先，不被自动换绑覆盖。
+     */
     public static function traceContext(): TraceContext
     {
-        return self::$traceContext ??= (TraceContext::fromServer() ?? TraceContext::start());
+        $current = self::$traceContext;
+
+        if ($current === null) {
+            return self::$traceContext = (TraceContext::fromServer() ?? TraceContext::start());
+        }
+
+        if (!self::$traceContextBound) {
+            // 先做一次廉价比对，避免每次构造异常都全量扫描 $_SERVER
+            $incoming = self::incomingTraceId();
+
+            if ($incoming !== null && $incoming !== $current->traceId) {
+                return self::$traceContext = (TraceContext::fromServer() ?? TraceContext::start());
+            }
+        }
+
+        return $current;
     }
 
-    /** 指定链路上下文（常用于协程 / Worker 每请求初始化） */
+    /**
+     * 从入向请求头取 trace id（小写），无则 null。
+     * traceparent 定长：version(2) + '-' + trace-id(32)，故 trace id 位于偏移 3、长 32。
+     */
+    private static function incomingTraceId(): ?string
+    {
+        $legacy = $_SERVER['HTTP_X_TRACE_ID'] ?? null;
+        if (is_string($legacy) && $legacy !== '') {
+            return strtolower($legacy);
+        }
+
+        $traceparent = $_SERVER['HTTP_TRACEPARENT'] ?? null;
+        if (is_string($traceparent) && strlen($traceparent) >= 35) {
+            return strtolower(substr($traceparent, 3, 32));
+        }
+
+        return null;
+    }
+
+    /** 指定链路上下文（常用于协程 / Worker 每请求初始化）；传 null 交回自动派生 */
     public static function setTraceContext(?TraceContext $context): void
     {
         self::$traceContext = $context;
+        self::$traceContextBound = $context !== null;
     }
 
     /** 重置链路上下文，常驻进程每请求开始时调用 */
     public static function resetTraceContext(): TraceContext
     {
         self::$traceContext = null;
+        self::$traceContextBound = false;
 
         return self::traceContext();
     }

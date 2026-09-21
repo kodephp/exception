@@ -24,6 +24,34 @@ kode 统一异常处理包，支持 FPM / 多进程 / 多线程 / 协程 / 分�
 - **RFC 9457 支持**：新增 `ProblemDetailsFormatter`（`application/problem+json`）。
 - **致命错误兜底**：`register()` 注册 `register_shutdown_function` 捕获致命错误。
 
+## v3.1.0 修复（常驻进程状态安全）
+
+面向 Swoole / Workerman / RoadRunner 等常驻 worker 场景，逐项修复「静态状态跨请求串味」与保护器语义缺陷：
+
+- **trace 上下文跨请求串链**（HIGH）：`KodeException::traceContext()` 把首个请求派生的链路永久 memo 住，
+  同一 worker 内后续所有异常共用同一 `trace_id`，日志/审计无法按请求串联。现按入向请求头
+  （`X-Trace-Id`，其次 `traceparent` 的 trace-id 段）廉价比对后自动换绑；
+  宿主显式 `setTraceContext()` 注入的上下文标记为已绑定，不被自动换绑覆盖。
+- **协程上下文表无界泄漏**（HIGH）：`CoroutineExceptionHandler::setCurrentContext()` 用 context 自带的
+  随机 id 作键，而 `getCurrentContext()` / `clearContext()` 按当前执行单元取键 —— 结果既查不到也清不掉，
+  每次调用净泄漏一条。现统一以 `Runtime::contextKey()` 作键。
+- **`guard()` 重试不重跑调用体**（HIGH）：原实现只 `usleep()` 后 `return null`，重试预算耗尽才返回错误，
+  且 `retryCount` 成功后不复位（跨请求累计，最终永久只剩「直接返回错误」一条路）。
+  现把 callable 贯穿到 `retryOrFail()`，真正重跑、成功即复位计数。
+- **主管进程通知依赖不存在的函数**：`notifyWorkerSupervisor()` 调用 `swoole_server_getswmaster()`
+  （Swoole 无此 API），通知永不到达。改为 `setSupervisorNotifier(callable)` 由宿主运行时注入，
+  通知回调抛错只记 warning，绝不影响主流程。
+- **`failedCoroutines` 无界增长**：新增 `WorkerExceptionGuard::MAX_FAILED_COROUTINES`（100）环形淘汰最旧快照。
+- **关键异常在非 worker 环境退出进程**：`shouldExitWorker()` 对 `\Error` 无条件 `exit(1)`，
+  FPM / CLI 下会把宿主进程一起带走。现仅当确实运行在 worker 内才自我退出（交由主管重启）。
+- **脱敏漏掉带前后缀的键名**：`x-api-key` / `request_api_key` / `csrf_token` 一类不命中（旧逻辑只做整键或
+  单词元相等）。现按「连续词元」匹配（`api_key` 命中 `x_api_key`），同时保持 `author` / `design` /
+  `assignment` 不被误伤。
+- **生产态数组格式化器外泄源码路径**：`ArrayResponseFormatter` 对 `KodeException` 直接透传 `toArray()`，
+  `isProduction` 形同虚设。现生产态仅保留文件名（去目录）并移除 `chain`。
+- **链路追溯深度上限**：`ChainTracer::MAX_CHAIN_NODES`（50）截断超长前驱链，报告新增 `truncated` 标识，
+  避免循环内反复包装异常时产出巨型报告。
+
 ## 安装
 
 ```bash
@@ -245,7 +273,7 @@ curl_setopt($ch, CURLOPT_HTTPHEADER, [
 ### 协程 / Worker 运行时程序化响应
 
 Swoole、Workerman、Fiber 等不走 PHP 原生 `http` 输出，需自行写入响应对象。
-使用 `ExceptionManager::respond()` 即可获得 `状态吗 + 响应体`，且**不会**触发 `echo`：
+使用 `ExceptionManager::respond()` 即可获得 `状态码 + 响应体`，且**不会**触发 `echo`：
 
 ```php
 $manager->setSendHeaders(false);
@@ -258,6 +286,35 @@ $response->status($result['status']);
 $response->header('Content-Type', 'application/json; charset=utf-8');
 $response->end(json_encode($result['body'], JSON_UNESCAPED_UNICODE));
 ```
+
+### WorkerExceptionGuard：worker 内自愈
+
+```php
+use Kode\Exception\Coroutine\WorkerExceptionGuard;
+
+$guard = new WorkerExceptionGuard($logger, $manager, maxRetries: 2);
+
+// 主管进程收到通知后可选择重启该 worker（由宿主运行时注入，包内不假设具体 SAPI）
+$guard->setSupervisorNotifier(function (string $unitId, Throwable $e) use ($server): void {
+    $server->sendMessage(['type' => 'worker_error', 'unit' => $unitId], WORKERMSG_TCP, $server->master_pid);
+});
+
+// 每次调用必须把「可重跑的闭包」交给 guard()，重试才有意义
+$response = $guard->guard(fn() => $handler->handle($request));
+```
+
+语义要点：
+
+- 仅 `E1503 服务不可用` 级别的可重试码会重跑，最多 `maxRetries` 次（首次调用不计入），
+  成功即复位内部计数；重试中若换为不可重试或关键异常，立即按对应分支处理。
+- `\Error`（含 `\TypeError`）视为关键异常：记 `emergency` + 通知主管；**只有确实运行在 worker 内**才 `exit(1)`
+  交由主管重启，FPM / CLI 下不退出进程。
+- 退避是同步 `usleep`，因此 `guard()` 只能用于 worker 级后台执行；请求路径（热路径）禁用，
+  需要重试请改用队列或协程调度层（`backoff()` 可覆写为投递延迟队列）。
+- `guardCoroutine()` 的失败快照最多保留 `MAX_FAILED_COROUTINES`（100）条，超出淘汰最旧，
+  常驻进程内不会无界增长。
+- 每请求开始建议 `KodeException::resetTraceContext()`（或注入 `setTraceContext()`）；
+  未重置时包会按入向 `X-Trace-Id` / `traceparent` 自动换绑，但显式注入的上下文优先级最高。
 
 ## 配置
 

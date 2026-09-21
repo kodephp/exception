@@ -76,10 +76,29 @@ final class ContextSanitizer
         $normalized = self::normalizeKey($key);
         $tokens = explode('_', $normalized);
 
-        // 整键或任意词元命中即视为敏感；词元匹配避免把 author / design / assign
+        // 整键命中，或敏感词作为「连续词元」出现在键名中（如 x_api_key 命中 api_key、
+        // trace_token 命中 token）。按词元比对而非子串，避免把 author / design / assign
         // 这类普通字段误判为 auth / sign 而脱敏。
         foreach ($this->sensitiveKeys as $needle) {
-            if ($needle === $normalized || in_array($needle, $tokens, true)) {
+            if ($needle === $normalized || self::containsSequence($tokens, explode('_', $needle))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param list<string> $tokens @param list<string> $needle */
+    private static function containsSequence(array $tokens, array $needle): bool
+    {
+        $span = count($needle);
+        if ($span < 1 || $span > count($tokens)) {
+            return false;
+        }
+
+        $limit = count($tokens) - $span;
+        for ($i = 0; $i <= $limit; $i++) {
+            if (array_slice($tokens, $i, $span) === $needle) {
                 return true;
             }
         }

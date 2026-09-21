@@ -27,7 +27,20 @@ final class ArrayResponseFormatter implements ResponseFormatterInterface
     public function format(Throwable $exception): array
     {
         if ($exception instanceof KodeException) {
-            return $exception->toArray();
+            $data = $exception->toArray();
+
+            if ($this->isProduction) {
+                // 生产态对外只暴露定位用的 trace_id：源码绝对路径与调用链不外泄
+                $location = $data['location'] ?? [];
+                $data['location'] = [
+                    'file' => isset($location['file']) ? basename((string) $location['file']) : '',
+                    'line' => $location['line'] ?? 0,
+                    'method' => $location['method'] ?? '',
+                ];
+                unset($data['chain']);
+            }
+
+            return $data;
         }
 
         return [

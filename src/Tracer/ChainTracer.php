@@ -13,8 +13,13 @@ use Kode\Exception\Support\Runtime;
  */
 class ChainTracer
 {
+    /** 前驱链最大节点数：循环内反复包装异常时可产生极长链路 */
+    public const int MAX_CHAIN_NODES = 50;
+
     /** 链路节点 */
     protected array $chain = [];
+    /** 前驱链是否因超出 MAX_CHAIN_NODES 被截断 */
+    protected bool $truncated = false;
     /** 当前环境信息 */
     protected array $environment = [];
     /** 开始时间 */
@@ -60,13 +65,15 @@ class ChainTracer
     public function trace(\Throwable $exception): array
     {
         $this->chain = [];
+        $this->truncated = false;
         $this->addExceptionToChain($exception);
 
         $previous = $exception->getPrevious();
-        while ($previous !== null) {
+        while ($previous !== null && count($this->chain) < self::MAX_CHAIN_NODES) {
             $this->addExceptionToChain($previous, true);
             $previous = $previous->getPrevious();
         }
+        $this->truncated = $previous !== null;
 
         return $this->buildChainReport();
     }
@@ -147,6 +154,7 @@ class ChainTracer
             'source' => $source,
             'chain_length' => count($this->chain),
             'previous_count' => count($this->chain) - 1,
+            'truncated' => $this->truncated,
             'environment' => $this->environment,
             'execution_time' => microtime(true) - $this->startTime,
             'full_chain' => $this->chain,

@@ -33,7 +33,9 @@ class CoroutineExceptionHandler
 
     public static function setCurrentContext(CoroutineExceptionContext $context): void
     {
-        self::$coroutineContexts[$context->getCoroutineId()] = $context;
+        // 键必须与 getCurrentContext()/clearContext() 同源（当前执行单元），
+        // 早先用 context 自带的随机 spanId 作键：查不到、清不掉，每次调用还泄漏一条
+        self::$coroutineContexts[self::getCurrentCoroutineId()] = $context;
     }
 
     public static function getCurrentCoroutineId(): string
