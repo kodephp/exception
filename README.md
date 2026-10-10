@@ -222,7 +222,7 @@ echo $exporter->export($report);
 
 【🖥️ 环境】
   PID: 12345
-  PHP: 8.3.0
+  PHP: 8.4.0
   SAPI: fpm
 
 ───────────────────────────────────────────────────────────────
@@ -386,7 +386,7 @@ $e->getSummary(); // [E1001] 参数错误 (UserService.php:42)
 
 ## 项目规范
 
-- PHP 版本: >=8.3
+- PHP 版本: >=8.4
 - 严格类型: `declare(strict_types=1);`
 - 命名空间: `Kode\Exception`
 - 测试框架: PHPUnit
