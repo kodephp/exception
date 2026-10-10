@@ -3,11 +3,11 @@
     "description": "kode 统一异常处理包 - 支持 FPM/多进程/多线程/协程/分布式环境",
     "type": "library",
     "license": "MIT",
-    "version": "3.1.0",
+    "version": "4.0.0",
     "minimum-stability": "stable",
     "prefer-stable": true,
     "require": {
-        "php": ">=8.3",
+        "php": "^8.4",
         "psr/log": "^3.0",
         "monolog/monolog": "^3.0"
     },
@@ -32,5 +32,6 @@
             "type": "git",
             "url": "https://github.com/kodephp/exception.git"
         }
-    ]
+    ],
+    "keywords": []
 }
