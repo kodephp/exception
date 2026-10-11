@@ -596,6 +596,7 @@ class KodeException extends Exception implements JsonSerializable, Stringable
         return $this->toArray();
     }
 
+    #[\Override]
     public function jsonSerialize(): array
     {
         return $this->toArray();
@@ -606,6 +607,7 @@ class KodeException extends Exception implements JsonSerializable, Stringable
         return json_encode($this, $flags | JSON_THROW_ON_ERROR);
     }
 
+    #[\Override]
     public function __toString(): string
     {
         return $this->getSummary();
