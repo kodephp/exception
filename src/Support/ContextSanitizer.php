@@ -89,7 +89,7 @@ final class ContextSanitizer
     }
 
     /** @param list<string> $tokens @param list<string> $needle */
-    private static function containsSequence(array $tokens, array $needle): bool
+    private static function containsSequence(#[\SensitiveParameter] array $tokens, array $needle): bool
     {
         $span = count($needle);
         if ($span < 1 || $span > count($tokens)) {
