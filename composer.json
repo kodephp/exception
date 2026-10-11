@@ -3,16 +3,21 @@
     "description": "kode 统一异常处理包 - 支持 FPM/多进程/多线程/协程/分布式环境",
     "type": "library",
     "license": "MIT",
-    "version": "4.0.2",
+    "version": "4.0.3",
     "minimum-stability": "stable",
     "prefer-stable": true,
     "require": {
         "php": "^8.4",
+        "ext-mbstring": "*",
         "psr/log": "^3.0",
         "monolog/monolog": "^3.0"
     },
     "require-dev": {
         "phpunit/phpunit": "^10.0"
+    },
+    "support": {
+        "issues": "https://github.com/kodephp/exception/issues",
+        "source": "https://github.com/kodephp/exception"
     },
     "autoload": {
         "psr-4": {
