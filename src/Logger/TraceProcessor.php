@@ -104,13 +104,7 @@ class TraceProcessor
 
     protected function shouldSkipClass(string $class): bool
     {
-        foreach ($this->skipClasses as $prefix) {
-            if (str_starts_with($class, $prefix)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any($this->skipClasses, fn($prefix) => str_starts_with($class, $prefix));
     }
 
     public function setMaxDepth(int $depth): self

@@ -79,13 +79,7 @@ final class ContextSanitizer
         // 整键命中，或敏感词作为「连续词元」出现在键名中（如 x_api_key 命中 api_key、
         // trace_token 命中 token）。按词元比对而非子串，避免把 author / design / assign
         // 这类普通字段误判为 auth / sign 而脱敏。
-        foreach ($this->sensitiveKeys as $needle) {
-            if ($needle === $normalized || self::containsSequence($tokens, explode('_', $needle))) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any($this->sensitiveKeys, fn($needle) => $needle === $normalized || self::containsSequence($tokens, explode('_', $needle)));
     }
 
     /** @param list<string> $tokens @param list<string> $needle */

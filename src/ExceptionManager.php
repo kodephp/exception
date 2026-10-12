@@ -221,13 +221,7 @@ class ExceptionManager
 
     public function shouldReport(Throwable $exception): bool
     {
-        foreach ($this->dontReport as $class) {
-            if ($exception instanceof $class) {
-                return false;
-            }
-        }
-
-        return true;
+        return array_all($this->dontReport, fn($class) => !($exception instanceof $class));
     }
 
     // ==================== 处理入口 ====================

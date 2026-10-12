@@ -398,13 +398,7 @@ class KodeException extends Exception implements JsonSerializable, Stringable
     /** @param array<int, ErrorCode|string> $codes */
     public function isCodeIn(array $codes): bool
     {
-        foreach ($codes as $code) {
-            if ($this->isCode($code)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any($codes, fn($code) => $this->isCode($code));
     }
 
     public function getHttpStatusCode(): int

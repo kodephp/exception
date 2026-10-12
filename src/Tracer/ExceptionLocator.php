@@ -114,13 +114,7 @@ final class ExceptionLocator
 
     private function isProjectSource(string $file): bool
     {
-        foreach ($this->sourceRoots as $root) {
-            if (str_starts_with($file, $root)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any($this->sourceRoots, fn($root) => str_starts_with($file, $root));
     }
 
     private function shouldSkipFrame(array $frame): bool
@@ -129,13 +123,7 @@ final class ExceptionLocator
             return false;
         }
 
-        foreach ($this->skipPrefixes as $prefix) {
-            if (str_starts_with((string) $frame['class'], $prefix)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any($this->skipPrefixes, fn($prefix) => str_starts_with((string) $frame['class'], $prefix));
     }
 
     /** 计算异常严重程度（PSR-3 级别） */

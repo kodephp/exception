@@ -134,13 +134,7 @@ class ExceptionTraceAnalyzer
     /** 是否在项目目录内 */
     protected static function isInProject(string $file, array $projectRoots): bool
     {
-        foreach ($projectRoots as $root) {
-            if (str_starts_with($file, $root)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any($projectRoots, fn($root) => str_starts_with($file, $root));
     }
 
     /** 获取项目根目录 */

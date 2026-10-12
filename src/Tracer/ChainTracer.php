@@ -192,12 +192,7 @@ class ChainTracer
     /** 判断是否为项目文件 */
     protected function isProjectFile(string $file, array $roots): bool
     {
-        foreach ($roots as $root) {
-            if (str_starts_with($file, $root)) {
-                return true;
-            }
-        }
-        return false;
+        return array_any($roots, fn($root) => str_starts_with($file, $root));
     }
 
     /** 获取项目根目录 */
