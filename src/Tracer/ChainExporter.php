@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Kode\Exception\Tracer;
 
 use Kode\Exception\KodeException;
-use Throwable;
 
 /**
  * 链路报告导出器
