@@ -438,22 +438,17 @@ class KodeException extends Exception implements JsonSerializable, Stringable
     {
         $trace = $this->getTrace();
 
-        foreach ($trace as $frame) {
-            if (!isset($frame['class'])) {
-                continue;
-            }
-            if (!str_starts_with((string) $frame['class'], 'Kode\\Exception\\')) {
-                return $this->formatMethod($frame);
-            }
+        $frame = array_find(
+            $trace,
+            fn(array $frame) => isset($frame['class']) && !str_starts_with((string) $frame['class'], 'Kode\\Exception\\')
+        );
+        if ($frame !== null) {
+            return $this->formatMethod($frame);
         }
 
-        foreach ($trace as $frame) {
-            if (isset($frame['function'])) {
-                return $this->formatMethod($frame);
-            }
-        }
+        $frame = array_find($trace, fn(array $frame) => isset($frame['function']));
 
-        return 'unknown';
+        return $frame !== null ? $this->formatMethod($frame) : 'unknown';
     }
 
     /** 上游异常链（不含自身） @return list<Throwable> */
