@@ -16,14 +16,14 @@ final readonly class ExceptionLocation implements JsonSerializable, Stringable
 {
     /** @param list<FrameInfo> $frames */
     public function __construct(
-        public string $throwFile,
-        public int $throwLine,
+        public private(set) string $throwFile,
+        public private(set) int $throwLine,
         public string $message,
-        public string $class,
+        public private(set) string $class,
         public ?FrameInfo $projectFrame,
         public ?FrameInfo $externalFrame,
-        public array $frames,
-        public string $severity,
+        public private(set) array $frames,
+        public private(set) string $severity,
     ) {
     }
 

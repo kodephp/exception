@@ -30,7 +30,7 @@ final readonly class TraceContext
         public string $spanId,
         public ?string $parentSpanId = null,
         public int $flags = self::FLAG_SAMPLED,
-        public string $traceState = '',
+        public private(set) string $traceState = '',
     ) {
     }
 

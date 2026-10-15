@@ -17,10 +17,10 @@ final readonly class FrameInfo implements Stringable
     public function __construct(
         public string $file,
         public int $line,
-        public string $function,
+        public private(set) string $function,
         public ?string $class = null,
         public ?string $type = null,
-        public bool $isProjectSource = true,
+        public private(set) bool $isProjectSource = true,
     ) {
     }
 
