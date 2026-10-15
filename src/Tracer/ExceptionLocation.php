@@ -30,16 +30,16 @@ final readonly class ExceptionLocation implements JsonSerializable, Stringable
     /** 最贴近业务代码的文件 */
     public function getSourceFile(): string
     {
-        return $this->projectFrame?->file
-            ?? $this->externalFrame?->file
+        return $this->projectFrame->file
+            ?? $this->externalFrame->file
             ?? $this->throwFile;
     }
 
     /** 最贴近业务代码的行号 */
     public function getSourceLine(): int
     {
-        return $this->projectFrame?->line
-            ?? $this->externalFrame?->line
+        return $this->projectFrame->line
+            ?? $this->externalFrame->line
             ?? $this->throwLine;
     }
 

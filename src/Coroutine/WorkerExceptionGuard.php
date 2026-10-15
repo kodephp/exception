@@ -116,15 +116,8 @@ class WorkerExceptionGuard
 
     protected function isCriticalException(Throwable $exception): bool
     {
-        if ($exception instanceof \Error) {
-            return true;
-        }
-
-        if ($exception instanceof \TypeError) {
-            return true;
-        }
-
-        return false;
+        // TypeError 继承自 Error，此处已覆盖
+        return $exception instanceof \Error;
     }
 
     protected function handleCriticalException(Throwable $exception): void

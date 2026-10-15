@@ -67,7 +67,11 @@ class ExceptionManager
 
     public static function getInstance(): static
     {
-        return self::$instance ??= new static();
+        if (! self::$instance instanceof static) {
+            self::$instance = new static();
+        }
+
+        return self::$instance;
     }
 
     public static function setInstance(?self $instance): void

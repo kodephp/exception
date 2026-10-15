@@ -130,7 +130,7 @@ class KodeException extends Exception implements JsonSerializable, Stringable
         $enum = ErrorCode::parse($errorCode);
 
         $this->errorCodeEnum = $enum;
-        $this->errorCode = $enum?->value ?? (is_string($errorCode) ? strtoupper($errorCode) : self::CODE_UNKNOWN);
+        $this->errorCode = $enum->value ?? (is_string($errorCode) ? strtoupper($errorCode) : self::CODE_UNKNOWN);
         $this->errorMsg = $errorMsg ?? $enum?->message() ?? '未知错误';
         $this->type = $errorType !== null
             ? ErrorType::coerce($errorType)
@@ -446,7 +446,8 @@ class KodeException extends Exception implements JsonSerializable, Stringable
             return $this->formatMethod($frame);
         }
 
-        $frame = array_find($trace, fn(array $frame) => isset($frame['function']));
+        // trace 帧形状必含 function，过滤恒真 → 取首帧
+        $frame = $trace[0] ?? null;
 
         return $frame !== null ? $this->formatMethod($frame) : 'unknown';
     }
